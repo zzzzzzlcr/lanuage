@@ -124,7 +124,10 @@ when规则:
             content = '\n'.join(lines[1:])
             if content.rstrip().endswith('```'):
                 content = content.rstrip()[:-3]
-        return json.loads(content)
+        config = json.loads(content)
+        from auto_fixer import fix
+        config = fix(config)
+        return config
 
     # ==================================================================
     # Step 2: Validate JSON in browser
