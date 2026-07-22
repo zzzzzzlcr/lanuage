@@ -133,6 +133,27 @@ class FieldLocator:
                 self._cache[cache_key] = result
                 return result
 
+        # Still multiple → try position-based disambiguation
+        label = field.get("label", "").lower() or field.get("name", "").lower()
+        if label:
+            pos_map = {
+                "first": 0, "first name": 0, "given": 0, "名": 0,
+                "last": 1, "last name": 1, "family": 1, "surname": 1, "姓": 1,
+                "address": 2, "addr": 2, "street": 2, "地址": 2,
+                "city": 3, "城市": 3,
+                "state": 4, "province": 4, "州": 4, "省": 4,
+                "zip": 5, "postal": 5, "postcode": 5, "邮编": 5, "邮政编码": 5,
+                "ssn": 6, "social": 6, "手机号": 0, "phone": 0, "tel": 0, "电话": 0,
+            }
+            for kw, pos in pos_map.items():
+                if kw in label:
+                    if 0 <= pos < len(valid):
+                        c = valid[pos]
+                        result = LocatorResult(c['selector'], f"{c['strategy']}_position", c['confidence'],
+                                               frame_id, alternatives=valid)
+                        self._cache[cache_key] = result
+                        return result
+
         # Still multiple → pick best confidence, keep alternatives for debugging
         best = max(valid, key=lambda c: (c['confidence'], -len(c.get('selector',''))))
         alts = [LocatorResult(c['selector'], c['strategy'], c['confidence'], frame_id)
@@ -146,56 +167,6 @@ class FieldLocator:
                            f"{len(alts)} alternatives: {[a.selector for a in alts]}")
         self._cache[cache_key] = result
         return result
-
-        # Strategy 1: exact attribute match (aria-label, data-testid, name)
-        result = self._try_exact_attrs(field, frame_id)
-        if result and result.confidence >= 0.9:
-            self._cache[cache_key] = result
-            return result
-        if result: attempts.append(result)
-
-        # Strategy 2: label[for] association
-        result = self._try_label_for(field, frame_id)
-        if result and result.confidence >= 0.9:
-            self._cache[cache_key] = result
-            return result
-        if result: attempts.append(result)
-
-        # Strategy 3: type-based matching
-        result = self._try_type_match(field, frame_id)
-        if result and result.confidence >= 0.8:
-            self._cache[cache_key] = result
-            return result
-        if result: attempts.append(result)
-
-        # Strategy 4: placeholder text matching
-        result = self._try_placeholder(field, frame_id)
-        if result and result.confidence >= 0.7:
-            self._cache[cache_key] = result
-            return result
-        if result: attempts.append(result)
-
-        # Strategy 5: adjacent text proximity
-        result = self._try_adjacent_text(field, frame_id)
-        if result and result.confidence >= 0.6:
-            self._cache[cache_key] = result
-            return result
-        if result: attempts.append(result)
-
-        # Strategy 6: AI visual/snapshot fallback
-        if self.ai:
-            result = self._try_ai_fallback(field, frame_id)
-            if result:
-                self._cache[cache_key] = result
-                return result
-            if result: attempts.append(result)
-
-        # All failed
-        raise LocatorError(field, [
-            {'strategy': a.strategy, 'confidence': a.confidence,
-             'selector': a.selector}
-            for a in attempts if a
-        ])
 
     def clear_cache(self):
         self._cache.clear()
@@ -257,6 +228,10 @@ class FieldLocator:
         for r in self._candidates_placeholder(field, frame_id, container):
             candidates.append(r)
 
+        # Strategy 5: adjacent text (heading, label, parent text near the element)
+        for r in self._candidates_adjacent_text(field, frame_id, container):
+            candidates.append(r)
+
         return candidates
 
     def _candidates_exact_attrs(self, field, frame_id, container) -> List[dict]:
@@ -266,16 +241,19 @@ class FieldLocator:
         results = []
         root = container or "document"
         esc = name.replace('"', '\\"')
-        for attr in ['name', 'aria-label', 'data-testid']:
+        for attr in ['id', 'name', 'aria-label', 'data-testid']:
             js = (
                 f"(function(){{var r=[];var els=document.querySelectorAll('input[{attr}*=\"{esc}\"],"
                 f"select[{attr}*=\"{esc}\"],textarea[{attr}*=\"{esc}\"]');"
-                f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0)r.push(i);}}"
+                f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0||els[i].placeholder||els[i].name)r.push(i);}}"
                 f"return JSON.stringify(r);}})()"
             )
             raw = self.cdp.eval(js, frame_id)
             try:
-                indices = json.loads(raw)
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(parsed, str):
+                    parsed = json.loads(parsed)
+                indices = parsed
                 for idx in indices:
                     selector = f'[{attr}*="{esc}"]:nth-of-type({idx+1})' if len(indices) > 1 else f'[{attr}*="{esc}"]'
                     results.append({'selector': selector, 'strategy': attr,
@@ -293,15 +271,16 @@ class FieldLocator:
             f"for(var i=0;i<labels.length;i++){{"
             f"if(labels[i].textContent.toLowerCase().indexOf('{esc.lower()}')!==-1&&labels[i].htmlFor){{"
             f"var inp=document.getElementById(labels[i].htmlFor);"
-            f"if(inp&&inp.offsetWidth>0&&inp.id)r.push(inp.id);}}}}"
+            f"if(inp&&inp.id&&(inp.offsetWidth>0||inp.type==='checkbox'||inp.type==='radio'||inp.placeholder||inp.name))r.push(inp.id);}}}}"
             f"return JSON.stringify(r);}})()"
         )
         raw = self.cdp.eval(js, frame_id)
         try:
-            ids = json.loads(raw)
-            # Validate each selector actually works
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, str):
+                parsed = json.loads(parsed)
             results = []
-            for id in ids:
+            for id in parsed:
                 if id and id.strip():
                     results.append({'selector': f'#{id}', 'strategy': 'label_for', 'confidence': 0.95})
             return results
@@ -317,11 +296,11 @@ class FieldLocator:
         # Count how many visible matches
         js = (
             f"(function(){{var els=document.querySelectorAll('{selector}');var c=0;"
-            f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0)c++;}}"
+            f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0||els[i].placeholder||els[i].name)c++;}}"
             f"return c;}})()"
         )
         raw = self.cdp.eval(js, frame_id)
-        try: count = int(raw.strip())
+        try: count = int(raw.strip().strip('"'))
         except: count = 0
 
         if count == 0:
@@ -334,12 +313,12 @@ class FieldLocator:
         marker = f"tpm{hash(ftype)%10000}"
         js_mark = (
             f"(function(){{var els=document.querySelectorAll('input[type=\"{ftype}\"]');var n=0;"
-            f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0){{"
+            f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0||els[i].placeholder||els[i].name){{"
             f"els[i].setAttribute('data-{marker}',String(n));n++;}}}}"
             f"return n;}})()"
         )
         raw = self.cdp.eval(js_mark, frame_id)
-        try: actual_count = int(raw.strip())
+        try: actual_count = int(raw.strip().strip('"'))
         except: actual_count = count
 
         results = []
@@ -368,15 +347,74 @@ class FieldLocator:
         js = (
             f"(function(){{var r=[];var ins=document.querySelectorAll('input[placeholder]');"
             f"for(var i=0;i<ins.length;i++){{"
-            f"if(ins[i].placeholder.toLowerCase().indexOf('{esc.lower()}')!==-1&&ins[i].offsetWidth>0)"
+            f"if(ins[i].placeholder.toLowerCase().indexOf('{esc.lower()}')!==-1&&(ins[i].offsetWidth>0||ins[i].placeholder||ins[i].name))"
             f"r.push(i);}}return JSON.stringify(r);}})()"
         )
         raw = self.cdp.eval(js, frame_id)
         try:
-            indices = json.loads(raw)
+            indices = json.loads(raw) if isinstance(raw, str) else raw
             return [{'selector': f'input[placeholder*="{esc}"]', 'strategy': 'placeholder',
                      'confidence': 0.7} for _ in indices]
         except: return []
+
+    def _candidates_adjacent_text(self, field, frame_id, container) -> List[dict]:
+        """Find inputs/selects near matching text (parent, sibling, heading).
+
+        Confidence varies by match specificity:
+        - sibling match: 0.7 (most specific — label/h2 directly before element)
+        - heading match: 0.65 (h1-h4 in same container)
+        - parent match: 0.5 (broad — parent text may contain multiple elements' labels)
+        """
+        label = field.get("label", "")
+        if not label: return []
+        esc = label.replace("'", "\\'")
+        marker = f"at{abs(hash(label))%100000}"
+        # JS returns JSON array of {idx, src} where src="s"|"p"|"h" (sibling/parent/heading)
+        js = (
+            f"(function(){{var ins=document.querySelectorAll('input,select,textarea,[role=combobox],[role=listbox],[role=checkbox],[role=radio],[role=switch],[role=slider],[contenteditable=true]');"
+
+            f"var n=0;var seen=new Set();var results=[];"
+            f"for(var i=0;i<ins.length;i++){{var e=ins[i];"
+            # Allow offsetWidth=0 for: checkboxes, radios, and inputs with placeholder/name (SPA hidden steps)
+            f"var isCheck=(e.type==='checkbox'||e.type==='radio');"
+            f"var hasAttr=e.placeholder||e.name||e.getAttribute('aria-label')||e.getAttribute('data-testid');"
+            f"if((!e.offsetWidth&&!isCheck&&!hasAttr)||seen.has(e))continue;"
+            # Check previous sibling
+            f"var s=e.previousElementSibling;"
+            f"if(s&&s.textContent.toLowerCase().indexOf('{esc.lower()}')!==-1){{"
+            f"e.setAttribute('data-{marker}',String(n));results.push({{i:n,src:'s'}});n++;seen.add(e);continue;}}"
+            # Check next sibling (common for checkbox labels after input)
+            f"var ns=e.nextElementSibling;"
+            f"if(ns&&ns.textContent.toLowerCase().indexOf('{esc.lower()}')!==-1){{"
+            f"e.setAttribute('data-{marker}',String(n));results.push({{i:n,src:'s'}});n++;seen.add(e);continue;}}"
+            # Check parent text
+            f"var p=e.parentElement;"
+            f"if(p&&p.textContent&&p.textContent.length<500&&p.textContent.toLowerCase().indexOf('{esc.lower()}')!==-1){{"
+            f"e.setAttribute('data-{marker}',String(n));results.push({{i:n,src:'p'}});n++;seen.add(e);continue;}}"
+            # Check nearby heading (h1-h4) in same container
+            f"var h=e.closest('div,section,fieldset,main,form');"
+            f"if(h){{var hd=h.querySelector('h1,h2,h3,h4');"
+            f"if(hd&&hd.textContent.toLowerCase().indexOf('{esc.lower()}')!==-1){{"
+            f"e.setAttribute('data-{marker}',String(n));results.push({{i:n,src:'h'}});n++;seen.add(e);continue;}}}}"
+            # Check ancestor chain (up 4 levels) for label text (MUI: label outside input's subtree)
+            # Skip ancestors that contain multiple visible inputs — too broad
+            f"var a=e;"
+            f"for(var lv=0;lv<4;lv++){{a=a.parentElement;if(!a)break;"
+            f"if(a.textContent&&a.textContent.length<500&&a.textContent.toLowerCase().indexOf('{esc.lower()}')!==-1){{"
+            f"var ac=0;var ais=a.querySelectorAll('input:not([type=hidden]),select,textarea,[role=combobox]');"
+            f"for(var ai=0;ai<ais.length;ai++){{if(ais[ai].offsetWidth>0)ac++;}}"
+            f"if(ac<=1){{e.setAttribute('data-{marker}',String(n));results.push({{i:n,src:'a'}});n++;seen.add(e);break;}}"
+            f"}}}}"
+            f"}}return JSON.stringify(results);}})()"
+        )
+        raw = self.cdp.eval(js, frame_id)
+        try:
+            results = json.loads(raw) if isinstance(raw, str) else raw
+            conf_map = {'s': 0.7, 'h': 0.65, 'a': 0.55, 'p': 0.5}
+            return [{'selector': f'[data-{marker}="{r["i"]}"]', 'strategy': 'adjacent_text',
+                     'confidence': conf_map.get(r['src'], 0.6)} for r in results]
+        except:
+            return []
 
     def _resolve_frame(self, hint: str) -> str:
         """Find iframe by URL substring."""
@@ -514,7 +552,8 @@ class FieldLocator:
 
         escaped = label.replace("'", "\\'")
         js = (
-            f"(function(){{var ins=document.querySelectorAll('input,select,textarea');"
+            f"(function(){{var ins=document.querySelectorAll('input,select,textarea,[role=combobox],[role=listbox],[role=checkbox],[role=radio],[role=switch],[role=slider],[contenteditable=true]');"
+
             f"for(var i=0;i<ins.length;i++){{"
             f"var e=ins[i];if(!e.offsetWidth)continue;"
             # Check parent text
@@ -586,11 +625,19 @@ class FieldLocator:
         return None
 
     def _visible(self, selector: str, frame_id: str) -> bool:
-        """Check if element exists and is visible."""
+        """Check if element exists and is visible. Accepts hidden form controls
+        (custom widgets, MUI native inputs) that have semantic attributes."""
         esc = selector.replace("'", "\\'")
         js = (
-            f"(function(){{var e=document.querySelector('{esc}');"
-            f"return e&&e.offsetWidth>0?'yes':'no';}})()"
+            f"(function(){{var e=document.querySelector('{esc}');if(!e)return'no';"
+            # Visible: offsetWidth > 0
+            f"if(e.offsetWidth>0)return'yes';"
+            # Hidden but semantically meaningful (MUI native input, custom checkbox, etc.)
+            f"if(e.name||e.id||e.getAttribute('data-testid')||e.getAttribute('aria-label')||e.getAttribute('data-value'))return'yes';"
+            # Has a visible label pointing to it
+            f"var labels=document.querySelectorAll('label[for]');"
+            f"for(var i=0;i<labels.length;i++){{if(labels[i].htmlFor===e.id&&labels[i].offsetWidth>0)return'yes';}}"
+            f"return'no';}})()"
         )
         result = self.cdp.eval(js, frame_id)
         return "yes" in result

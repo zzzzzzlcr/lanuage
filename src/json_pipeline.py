@@ -58,21 +58,51 @@ class JSONPipeline:
 
 ## 核心规则（以下每一条都来自真实测试发现）
 
+### 0. 动词→动作速查（必读！）
+运营描述中的动词对应唯一的 action 类型，不要自己编造新 action：
+| 运营怎么写 | action | JSON 模板 |
+|-----------|--------|----------|
+| 等待 X-Y 秒 | wait | {"action":"wait","min":X,"max":Y} |
+| 点击XXX | click | {"action":"click","find":{"text":"XXX"}} |
+| 填邮箱/填姓名/填密码/填写XXX | form | {"action":"form","field":{"label":"XXX","type":"推断"},"value":"{{变量}}"} |
+| 选择XXX（下拉框，选YYY） | form | {"action":"form","field":{"label":"XXX"},"select":"YYY"} |
+| 随机选一个选项 | select | {"action":"select","selection_strategy":{"type":"random"}} |
+| 勾选 XXX | form | {"action":"form","field":{"label":"XXX"},"check":"true"} |
+| 滚动 | scroll | {"action":"scroll","min":100,"max":500} |
+| 拖动XXX（滚动条） | eval | {"action":"eval","script":"var sl=document.querySelector('input[type=range]');..."} |
+**绝对不要使用 delay、navigate、fill、type、input 等不存在的 action！**
+
 ### 1. 按钮点击
-- 普通按钮: {"action":"click","find":{"text":"按钮文字"},"optional":true}
+- 普通按钮: {"action":"click","find":{"text":"按钮文字"}} (不要加optional除非运营写了"(可选)")
 - iframe里的按钮: 必须用eval！因为cdp click在iframe里点不动:
   {"action":"eval","script":"var bs=document.querySelectorAll('button');for(var i=0;i<bs.length;i++){if(bs[i].textContent.trim()==='按钮文字'&&bs[i].offsetWidth>0){bs[i].click();}}","optional":true}
-  判断标准: 如果按钮在iframe里(运营说了"在iframe里"), 就用eval
+  判断标准: 如果按钮在iframe里(运营说了"在iframe里"), 就用eval (不要加optional除非运营写"(可选)")
 
 ### 2. 填表单
+- 有id提示: {"action":"form","find":{"id":"输入框id"},"value":"{{变量}}"} ← 运营写了id就必须用find.id！
 - 普通: {"action":"form","field":{"label":"标签","type":"推断类型"},"value":"{{变量}}"}
 - iframe里: 加 "frame_url":"URL关键词" (只用域名部分, 如"entyrecare"不用"forms.entyrecare")
 - type推断: email→email, phone/手机→tel, password/密码→password, name/姓名→text
+- 运营描述里有"输入框id=xxx"或"id=xxx"时，必须用find.id方式，不要用field.label
 
-### 3. quiz随机选项
+### 3. 滚动条/滑块 (range)
+运营说"拖动XXX到YYY"或"选择XXX（滚动条）"时:
+- 用eval直接设值+触发事件:
+  {"action":"eval","script":"var sl=document.querySelector('input[type=range]');if(sl){sl.value=50000;sl.dispatchEvent(new Event('input',{bubbles:true}));sl.dispatchEvent(new Event('change',{bubbles:true}));}"}
+- 数值从运营描述中取，如果运营写"债务金额"或"选择金额"，默认拖到较大值如50000
+
+### 4. 下拉框选择 (select)
+运营说"选择XXX（下拉框，选YYY）"或"Select XXX（下拉框，选YYY）"或带"（下拉框"字样时:
+- 有id: {"action":"form","find":{"id":"下拉框id"},"select":"选项值"}
+- 有label: {"action":"form","field":{"label":"下拉框的标签文字"},"select":"选项值"}
+- 注意: "select"字段的值必须在下拉框的option中精确匹配
+- 关键: 下拉框必须用 "select":"选项值"，绝对不能用 "value"！value是给输入框填文字用的
+- 只要描述里有"（下拉框"字样，就必须用 "select" 而不是 "value"
+
+### 5. quiz随机选项
 {"action":"select","selection_strategy":{"type":"random"}}
 
-### 4. 状态机模式 (运营用when_XXX格式)
+### 6. 状态机模式 (运营用when_XXX格式)
 输出:
 {
   "site":"域名","form_type":"类型",
@@ -94,10 +124,11 @@ class JSONPipeline:
 when规则:
 - field_exists: 字段在当前页时才执行 (填表步骤必须用)
 - {}: 总是尝试 (quiz选项、导航按钮)
-- 可选步骤加 "optional":true
+- 可选步骤加 "optional":true (只有运营写了"(可选)"才加！填表步骤不要加optional)
 
-### 5. 线性模式 (运营用编号1.2.3.格式)
-{"site":"...","form_type":"...","success":{...},"steps":[...]}
+### 7. 线性模式 (运营用编号1.2.3.格式)
+{"site":"完整URL去掉协议","form_type":"...","success":{...},"steps":[...]}
+- site 示例: "free.spree.com/maxbonus/" 或 "tello.com"（保留路径部分）
 
 ### 变量
 {{random.email}} {{random.password}} {{random.name}} {{random.last_name}} {{random.phone}} {{random.zip}}
@@ -124,9 +155,12 @@ when规则:
             content = '\n'.join(lines[1:])
             if content.rstrip().endswith('```'):
                 content = content.rstrip()[:-3]
+        print(f"\n{'='*60}\n[LLM RAW OUTPUT]\n{content}\n{'='*60}\n", flush=True)
         config = json.loads(content)
         from auto_fixer import fix
         config = fix(config)
+        import json as _j
+        print(f"\n[AFTER FIX]\n{_j.dumps(config, indent=2, ensure_ascii=False)}\n{'='*60}\n", flush=True)
         return config
 
     # ==================================================================
@@ -280,8 +314,21 @@ when规则:
                     sr.success = False
                     sr.error = f"Element not found: {find or field}"
                     return sr
-                self.cdp.form(selector, value=step.get('value'),
-                             select=step.get('select'))
+                # Auto-detect: if target is <select> and LLM used "value",
+                # convert to "select" so the dropdown gets populated correctly.
+                value = step.get('value')
+                select = step.get('select')
+                if not select and value:
+                    esc = selector.replace("'", "\\'")
+                    tag = self.cdp.eval(
+                        f"(function(){{var e=document.querySelector('{esc}');"
+                        f"return e?e.tagName:'';}})()")
+                    if tag and tag.strip().strip('"').upper() == 'SELECT':
+                        select = value
+                        value = None
+                        self.log.info(f"[auto-fix] Converted value→select for <select> {selector}")
+
+                self.cdp.form(selector, value=value, select=select)
 
             elif action == 'wait_for':
                 timeout = step.get('timeout', 30)

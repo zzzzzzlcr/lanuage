@@ -11,7 +11,7 @@ from typing import Dict, Optional
 import threading
 
 # CDP binary path
-CDP_PATH = "/opt/skills/auto-farm-skill/cdp"
+CDP_PATH = os.environ.get("CDP_PATH", "/company/cdpcli/cdp")
 
 # API endpoints
 SCREENSHOT_API_URL = os.environ.get("SCREENSHOT_API_URL", "https://fmr.3tkj.cn/api/quest/screenshot")
@@ -73,7 +73,7 @@ class CDPHelper:
                      "--port", self.port],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=CDP_TIMEOUT
                 )
 
                 if result.returncode == 0:
@@ -112,7 +112,7 @@ class CDPHelper:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return result.stdout + result.stderr
 
@@ -137,15 +137,23 @@ class CDPHelper:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
-        output = result.stdout + result.stderr
+        output = (result.stdout + result.stderr).strip()
 
         # Check for browser closed error
         if "failed to create client" in output or "no page target" in output or "BugError" in output:
             return "ERROR: Browser or page was closed"
 
-        return output
+        # CDP binary wraps all outputs in JSON quotes. Decode once.
+        # If result is still a JSON array/object string (nested), decode again.
+        try:
+            decoded = json.loads(output)
+            if isinstance(decoded, str) and decoded and decoded[0] in '{"[':
+                decoded = json.loads(decoded)
+            return decoded
+        except (json.JSONDecodeError, ValueError):
+            return output
 
     def form(self, selector: str, value: str = None, check: str = None,
              select: str = None, frame_id: str = "") -> str:
@@ -178,7 +186,7 @@ class CDPHelper:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         output = result.stdout + result.stderr
 
@@ -190,7 +198,7 @@ class CDPHelper:
 
     def navigate(self, url: str) -> str:
         """
-        Navigate to URL.
+        Navigate to URL using CDP navi command (handles navigation properly).
 
         Args:
             url: Target URL
@@ -198,13 +206,12 @@ class CDPHelper:
         Returns:
             Navigation result
         """
-        script = f"window.location.href = '{url}'"
         result = subprocess.run(
-            [CDP_PATH, "eval", script,
+            [CDP_PATH, "navi", url,
              "--host", self.host, "--port", self.port],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return result.stdout + result.stderr
 
@@ -223,7 +230,7 @@ class CDPHelper:
              "--host", self.host, "--port", self.port],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return result.stdout + result.stderr
 
@@ -239,7 +246,7 @@ class CDPHelper:
              "--host", self.host, "--port", self.port],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return result.stdout.strip()
 
@@ -258,6 +265,57 @@ class CDPHelper:
         title = title_result.strip().strip('"').strip("'")
 
         return {"url": url, "title": title}
+
+    def wait_page_stable(self, timeout: int = 15, poll_interval: float = 0.8) -> bool:
+        """Wait until page is fully loaded and DOM stops changing.
+
+        Returns True if page stabilized, False if timed out.
+        """
+        deadline = time.time() + timeout
+        last_body = ""
+        stable_count = 0
+        ready = False
+
+        while time.time() < deadline:
+            try:
+                # Check readyState
+                rs = self.eval("document.readyState", "").strip().strip('"')
+                if rs == "complete":
+                    ready = True
+                # Check DOM stability (body text length stops changing)
+                body = self.eval(
+                    "(function(){return document.body?document.body.innerText.length:0;})()",
+                    "").strip()
+                if body == last_body and ready:
+                    stable_count += 1
+                    if stable_count >= 3:  # 3 consecutive stable checks
+                        return True
+                else:
+                    stable_count = 0
+                last_body = body
+            except Exception:
+                pass
+            time.sleep(poll_interval)
+
+        return ready  # timed out but at least readyState was complete
+
+    def wait_for_element(self, selector: str, timeout: int = 15,
+                         frame_id: str = "") -> bool:
+        """Poll until element exists and is visible. Returns True if found."""
+        deadline = time.time() + timeout
+        esc = selector.replace("'", "\\'")
+        while time.time() < deadline:
+            try:
+                result = self.eval(
+                    f"(function(){{var e=document.querySelector('{esc}');"
+                    f"return e&&e.offsetWidth>0?'yes':'no';}})()",
+                    frame_id)
+                if "yes" in result:
+                    return True
+            except Exception:
+                pass
+            time.sleep(1)
+        return False
 
 
 def report_screenshot(task_id: str, step: str, screenshot_b64: str, url: str = "",

@@ -37,12 +37,25 @@ class ElementFinder:
             tag = find_spec.get("tag", "")
             escaped = find_spec["text"].replace("'", "\\'")
             tag_filter = f"&&el[i].tagName==='{tag.upper()}'" if tag else ""
+            # Exclude HTML and BODY — they contain all page text and are not clickable
+            no_html_body = "&&el[i].tagName!=='HTML'&&el[i].tagName!=='BODY'" if not tag else ""
             js = (
-                f"(function(){{var el=document.querySelectorAll('*');"
+                f"(function(){{"
+                # Clean up previous marker so CDP click targets the right element
+                f"var prev=document.querySelector('[data-target]');if(prev)prev.removeAttribute('data-target');"
+                f"var el=document.querySelectorAll('*');"
+                f"var best=null,bestLen=999999,bestIsInteractive=false;"
                 f"for(var i=0;i<el.length;i++){{"
-                f"if(el[i].textContent.trim().indexOf('{escaped}')!==-1"
-                f"&&el[i].offsetWidth>0{tag_filter})"
-                f"{{el[i].setAttribute('data-target','x');return'yes';}}}}"
+                f"if(el[i].textContent.trim().toLowerCase().indexOf('{escaped.lower()}')!==-1"
+                f"&&el[i].offsetWidth>0{tag_filter}{no_html_body}){{"
+                f"var tlen=el[i].textContent.trim().length;"
+                f"var tag=el[i].tagName;"
+                f"var isInteractive=(tag==='A'||tag==='BUTTON'||tag==='LABEL'||tag==='INPUT');"
+                # Prefer interactive elements; among equals, prefer shortest text
+                f"if(isInteractive&&!bestIsInteractive){{best=el[i];bestLen=tlen;bestIsInteractive=true;}}"
+                f"else if(isInteractive==bestIsInteractive&&tlen<bestLen){{best=el[i];bestLen=tlen;}}"
+                f"}}}}"
+                f"if(best){{best.setAttribute('data-target','x');return'yes';}}"
                 f"return'no';}})()"
             )
             result = self.cdp.eval(js, frame_id)

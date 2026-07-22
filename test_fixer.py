@@ -43,10 +43,10 @@ em = find_form("Email")
 if em.get("field", {}).get("type") != "email":
     errors.append(f"Email type not set: {em.get('field', {}).get('type')}")
 
-# Check 4: click → eval
+# Check 4: click steps preserved (no longer converted to eval)
 click_steps = [s for s in steps if s.get("action") == "click"]
-if click_steps:
-    errors.append(f"Click not converted: {len(click_steps)} remaining")
+if not click_steps:
+    errors.append("Click steps should remain as click (not converted to eval)")
 
 # Check 5: id removed
 fn = find_form("First Name")

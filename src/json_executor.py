@@ -45,6 +45,8 @@ class JSONExecutor:
             self._run_pre()
 
             ok = self._execute_step(step)
+            # Throttle CDP calls to prevent connection issues
+            time.sleep(0.2)
             if not ok and not step.get("optional"):
                 self.log.error(f"[JSON] Step {i+1} failed: {step}")
                 self.report_fn(self.cdp, self.profile.get("task_id", ""), "step_failed", self.log)
@@ -84,7 +86,7 @@ class JSONExecutor:
         elif "any" not in loop_until and "url_contains" in loop_until or "body_contains" in loop_until:
             # Flat format: wrap in any
             loop_until = {"any": [loop_until]}
-        max_rounds = self.config.get("max_rounds", 30)
+        max_rounds = self.config.get("max_rounds", 50)
         executed_ids = set()
 
         for rnd in range(max_rounds):
@@ -133,17 +135,27 @@ class JSONExecutor:
                     self.log.warning(f"[JSON]   {sid} failed (non-optional)")
 
             if not matched:
-                # Try advancing: click Next/Continue if visible
+                # Try advancing: click Next/Continue if visible (using CDP click)
                 self.log.info("[JSON] No matching steps, trying Next/Continue")
                 for btn in ["Next", "Continue", "Submit"]:
-                    js = (
+                    # Mark matching button then CDP click it
+                    esc = btn.replace("'", "\\'")
+                    js_mark = (
                         f"(function(){{var bs=document.querySelectorAll('button');"
                         f"for(var i=0;i<bs.length;i++){{"
-                        f"if(bs[i].textContent.trim()==='{btn}'&&bs[i].offsetWidth>0)"
-                        f"{{bs[i].click();return'clicked';}}}}return'none';}})()"
+                        f"if(bs[i].textContent.trim()==='{esc}'&&bs[i].offsetWidth>0)"
+                        f"{{bs[i].setAttribute('data-auto-advance','1');return'found';}}}}"
+                        f"return'none';}})()"
                     )
-                    r = self.cdp.eval(js, self._frame_id)
-                    if "clicked" in r:
+                    r = self.cdp.eval(js_mark, self._frame_id)
+                    if "found" in r:
+                        try:
+                            self.cdp.click('[data-auto-advance=\"1\"]', self._frame_id)
+                        except Exception:
+                            pass
+                        self.cdp.eval(
+                            "(function(){var e=document.querySelector('[data-auto-advance]');"
+                            "if(e)e.removeAttribute('data-auto-advance');})()", self._frame_id)
                         self.log.info(f"[JSON]   clicked {btn}")
                         time.sleep(random.uniform(2, 4))
                         break
@@ -173,6 +185,16 @@ class JSONExecutor:
             try:
                 field = cond["field_exists"]
                 frame_hint = field.get("frame_url", "")
+                ftype = field.get("type", "").lower()
+
+                # Button detection: search by visible text, not locator
+                if ftype == "button":
+                    label = field.get("label", "")
+                    frame_id = self.locator._resolve_frame(frame_hint) if frame_hint else self._frame_id
+                    ok = self._find_visible_button(label, frame_id)
+                    self.log.info(f"[JSON] field_exists button '{label}': {ok}")
+                    return ok
+
                 loc = self.locator.locate(field, frame_hint=frame_hint)
                 ok = bool(loc and loc.selector)
                 self.log.info(f"[JSON] field_exists {field.get('label','?')}: {ok} sel={loc.selector if ok else 'NONE'}")
@@ -181,9 +203,10 @@ class JSONExecutor:
                 self.log.info(f"[JSON] field_exists {field.get('label','?')}: LocatorError {e}")
                 return False
 
-        # body_contains
-        if "body_contains" in cond:
-            patterns = cond["body_contains"]
+        # body_contains (also accept text_contains as alias)
+        body_key = "body_contains" if "body_contains" in cond else ("text_contains" if "text_contains" in cond else None)
+        if body_key:
+            patterns = cond[body_key]
             if not isinstance(patterns, list): patterns = [patterns]
             if any(p in body for p in patterns):
                 return True
@@ -201,6 +224,19 @@ class JSONExecutor:
                 return True
 
         return False
+
+    def _find_visible_button(self, label: str, frame_id: str = "") -> bool:
+        """Check if a button/link with given text is visible on the page."""
+        esc = label.replace("'", "\\'")
+        js = (
+            f"(function(){{var els=document.querySelectorAll('button,a,div,li,label,span[role=button],[role=button],[role=option]');"
+            f"for(var i=0;i<els.length;i++){{"
+            f"if(els[i].offsetWidth>0&&els[i].textContent.trim().indexOf('{esc}')!==-1)"
+            f"return'yes';}}"
+            f"return'no';}})()"
+        )
+        result = self.cdp.eval(js, frame_id)
+        return "yes" in result
 
     def _resolve_frame(self, frame_spec: dict) -> str:
         """Resolve a frame spec to a CDP frameId via snapshot."""
@@ -278,7 +314,7 @@ class JSONExecutor:
             js = (
                 f"var skip={json.dumps(skip_words)};"
                 f"var root={container};if(!root)return'no container';"
-                f"var r=[];var els=root.querySelectorAll('button,a,label,li,[role=button],[role=option]');"
+                f"var r=[];var els=root.querySelectorAll('button,a,label,li,div,[role=button],[role=option]');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"var e=els[i];var t=e.textContent.trim();"
                 f"if(!e.offsetWidth||t.length<2||t.length>60)continue;"
@@ -393,16 +429,24 @@ class JSONExecutor:
         strategy = step.get("selection_strategy", {})
         stype = strategy.get("type", "random")
         skip_words = ['About','Terms','Privacy','Cookie','Sign In','Contact',
-                      'Arbitration','Manage','Policy','Disclaimer']
+                      'Arbitration','Manage','Policy','Disclaimer',
+                      'Get','View','Submit','Continue','Next','See','Go','Check']
 
         if stype == "random":
+            # Clean up any leftover markers from previous calls
+            self.cdp.eval(
+                "(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()",
+                self._frame_id)
             # Randomly click any visible option-like element
+            # Prefer labels/divs over buttons (buttons are usually CTAs, not options)
             js = (
                 f"var skip={json.dumps(skip_words)};"
-                f"var r=[];var els=document.querySelectorAll('button,a,label,li,[role=button],[role=option]');"
+                f"var r=[];var els=document.querySelectorAll('button,a,label,li,div,[role=button],[role=option]');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"var e=els[i];var t=e.textContent.trim();"
                 f"if(!e.offsetWidth||t.length<2||t.length>60)continue;"
+                f"if(e.tagName==='LABEL'&&e.htmlFor)continue;"
+                f"if(e.tagName==='INPUT'||e.tagName==='TEXTAREA'||e.tagName==='SELECT')continue;"
                 f"var bad=false;for(var s=0;s<skip.length;s++){{"
                 f"if(t.indexOf(skip[s])!==-1){{bad=true;break;}}}}"
                 f"if(!bad)r.push(i);}}"
@@ -414,8 +458,8 @@ class JSONExecutor:
             )
             result = self.cdp.eval(f"(function(){{{js}}})()", self._frame_id)
             if "clicked" in result:
-                try: self.cdp.click('[data-sel="1"]', self._frame_id)
-                except: pass
+                # JS .click() for onclick handlers (works for all element types)
+                self.cdp.eval("(function(){var e=document.querySelector('[data-sel=\"1\"]');if(e)e.click();})()", self._frame_id)
                 self.cdp.eval("(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()", self._frame_id)
                 return True
             return False
@@ -426,7 +470,7 @@ class JSONExecutor:
             # Find element with matching text
             js = (
                 f"var t='{target.replace(chr(39),chr(92)+chr(39))}';"
-                f"var els=document.querySelectorAll('button,a,label,li,[role=button],[role=option]');"
+                f"var els=document.querySelectorAll('button,a,label,li,div,[role=button],[role=option]');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"var tx=els[i].textContent.trim();"
                 f"if(tx.indexOf(t)!==-1&&els[i].offsetWidth>0){{"
@@ -446,7 +490,7 @@ class JSONExecutor:
         elif stype == "first":
             js = (
                 f"var skip={json.dumps(skip_words)};"
-                f"var els=document.querySelectorAll('button,a,label,li,[role=button],[role=option]');"
+                f"var els=document.querySelectorAll('button,a,label,li,div,[role=button],[role=option]');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"var e=els[i];var t=e.textContent.trim();"
                 f"if(!e.offsetWidth||t.length<2||t.length>60)continue;"
@@ -463,20 +507,56 @@ class JSONExecutor:
     def _execute_step(self, step: dict) -> bool:
         """Execute a single step. Returns True on success."""
         action = step.get("action", "")
-        frame_spec = step.get("frame")
         retry = step.get("retry", 1)
         optional = step.get("optional", False)
 
-        # Resolve frame_id from frame spec (cached if same as last)
-        if frame_spec:
-            self._frame_id = self._resolve_frame(frame_spec)
+        # Resolve frame_id: supports "frame_url" (LLM) and "frame" (legacy) keys
+        frame_hint = step.get("frame_url") or step.get("frame")
+        if frame_hint:
+            self._frame_id = self.locator._resolve_frame(frame_hint)
+        # Also check field-level frame_url
+        field = step.get("field", {}) or {}
+        if not self._frame_id and field.get("frame_url"):
+            self._frame_id = self.locator._resolve_frame(field["frame_url"])
+        # Also check find-level
+        find = step.get("find", {}) or {}
+        if not self._frame_id and find.get("frame_url"):
+            self._frame_id = self.locator._resolve_frame(find["frame_url"])
 
         for attempt in range(retry):
             try:
-                if action == "wait":
-                    t = random.uniform(step.get("min", 0.3), step.get("max", 1.5))
-                    time.sleep(t)
-                    return True
+                if action in ("wait", "delay"):
+                    # delay uses "time" in ms, wait uses min/max in seconds
+                    if "time" in step:
+                        t = step["time"] / 1000.0
+                    else:
+                        t = random.uniform(step.get("min", 0.3), step.get("max", 1.5))
+                    # Conditional early exit: if page is ready earlier, stop waiting
+                    check_url = step.get("or_until_url")
+                    check_body = step.get("or_until_body")
+                    early_exit = check_url or check_body
+                    if early_exit:
+                        deadline = time.time() + t
+                        while time.time() < deadline:
+                            time.sleep(min(1, deadline - time.time()))
+                            try:
+                                info = self.cdp.get_page_info()
+                                url = info.get("url", "")
+                                body = self.cdp.eval(
+                                    "(function(){return document.body?document.body.innerText.substring(0,2000):'';})()",
+                                    self._frame_id)
+                                if check_url and check_url in url:
+                                    self.log.info(f"[JSON] wait early exit: URL matched '{check_url}'")
+                                    return True
+                                if check_body and check_body.lower() in body.lower():
+                                    self.log.info(f"[JSON] wait early exit: body matched '{check_body}'")
+                                    return True
+                            except Exception:
+                                pass
+                        return True
+                    else:
+                        time.sleep(t)
+                        return True
 
                 elif action == "scroll":
                     px = random.randint(step.get("min", 100), step.get("max", 500))
@@ -498,16 +578,25 @@ class JSONExecutor:
                     if field:
                         # Semantic field: locate at runtime, resolve frame fresh each time
                         frame_hint = field.get("frame_url", "")
-                        try:
-                            loc = self.locator.locate(field, frame_hint=frame_hint)
-                            selector = loc.selector
-                            if loc.frame_id:
-                                self._frame_id = loc.frame_id
-                            self.log.info(f"[JSON] click: located '{field}' via {loc.strategy} ({loc.confidence})")
-                        except LocatorError as e:
-                            self.log.warning(f"[JSON] click: cannot locate field: {e}")
-                            if optional: return True
-                            return False
+                        selector = None
+                        for retry_i in range(3):
+                            try:
+                                loc = self.locator.locate(field, frame_hint=frame_hint)
+                                selector = loc.selector
+                                if loc.frame_id:
+                                    self._frame_id = loc.frame_id
+                                self.log.info(f"[JSON] click: located '{field}' via {loc.strategy} ({loc.confidence})")
+                                break
+                            except LocatorError as e:
+                                if retry_i < 2:
+                                    wait_s = (retry_i + 1) * 2
+                                    self.log.info(f"[JSON] click: retry {retry_i+1}/3 in {wait_s}s — {e}")
+                                    self.cdp.wait_page_stable(timeout=wait_s)
+                                    self.locator.clear_cache()
+                                else:
+                                    self.log.warning(f"[JSON] click: cannot locate field after 3 retries: {e}")
+                                    if optional: return True
+                                    return False
                     else:
                         selector = self.finder.find(find, fctx)
                     if not selector:
@@ -519,6 +608,13 @@ class JSONExecutor:
                             continue
                         return False
                     self.cdp.click(selector, self._frame_id)
+                    # For <a> links: CDP click navigates href=# instead of onclick, JS .click() fixes it
+                    esc = selector.replace("'", "\\'")
+                    self.cdp.eval(
+                        f"(function(){{var e=document.querySelector('{esc}');if(e&&e.tagName==='A')e.click();}})()",
+                        self._frame_id)
+                    # Auto-wait for page to stabilize after click (buttons often trigger navigation/DOM changes)
+                    self.cdp.wait_page_stable(timeout=15)
                     if "wait_after" in step:
                         time.sleep(random.uniform(step["wait_after"][0], step["wait_after"][1]))
                     return True
@@ -529,15 +625,24 @@ class JSONExecutor:
                     fctx = {"frame_id": self._frame_id} if self._frame_id else None
                     if field:
                         frame_hint = field.get("frame_url", "")
-                        try:
-                            loc = self.locator.locate(field, frame_hint=frame_hint)
-                            selector = loc.selector
-                            if loc.frame_id:
-                                self._frame_id = loc.frame_id
-                            self.log.info(f"[JSON] form: located '{field}' via {loc.strategy} ({loc.confidence})")
-                        except LocatorError as e:
-                            self.log.warning(f"[JSON] form: cannot locate field: {e}")
-                            return False
+                        selector = None
+                        for retry_i in range(3):  # retry with backoff for slow page loads
+                            try:
+                                loc = self.locator.locate(field, frame_hint=frame_hint)
+                                selector = loc.selector
+                                if loc.frame_id:
+                                    self._frame_id = loc.frame_id
+                                self.log.info(f"[JSON] form: located '{field}' via {loc.strategy} ({loc.confidence})")
+                                break
+                            except LocatorError as e:
+                                if retry_i < 2:
+                                    wait_s = (retry_i + 1) * 3
+                                    self.log.info(f"[JSON] form: retry {retry_i+1}/3 in {wait_s}s — {e}")
+                                    self.cdp.wait_page_stable(timeout=wait_s * 2)
+                                    self.locator.clear_cache()
+                                else:
+                                    self.log.warning(f"[JSON] form: cannot locate field after 3 retries: {e}")
+                                    return False
                     else:
                         selector = self.finder.find(find, fctx)
                     if not selector:
@@ -546,9 +651,10 @@ class JSONExecutor:
                     value = step.get("value")
                     check = step.get("check")
                     select = step.get("select")
-                    if check is not None:
-                        check = "true" if check else "false"
-                    self.cdp.form(selector, value=value, check=check, select=select, frame_id=self._frame_id)
+                    ok = self._smart_form(selector, value=value, check=check, select=select,
+                                          frame_id=self._frame_id)
+                    if not ok:
+                        return False
                     return True
 
                 elif action == "wait_for":
@@ -594,6 +700,125 @@ class JSONExecutor:
 
         return False
 
+    def _smart_form(self, selector: str, value: str = None, check: str = None,
+                    select: str = None, frame_id: str = "") -> bool:
+        """Handle form interaction for any element type (native or custom widget).
+
+        Detects the element type and uses the appropriate interaction:
+        - Native <select> → cdp.form --select
+        - Custom combobox (div[role=combobox], MUI Select) → click open + click option
+        - Range slider → set value + dispatch input/change events
+        - Checkbox/radio → click to toggle
+        - Text input → cdp.form --value
+        """
+        esc = selector.replace("'", "\\'")
+        js_info = (
+            f"(function(){{var e=document.querySelector('{esc}');if(!e)return'null';"
+            f"return JSON.stringify({{tag:e.tagName,type:e.type||'',"
+            f"role:e.getAttribute('role')||'',aria:e.getAttribute('aria-expanded')||'',"
+            f"isContentEditable:e.isContentEditable||e.contentEditable==='true'}});}})()"
+        )
+        raw = self.cdp.eval(js_info, frame_id)
+        try:
+            info = json.loads(raw)
+            if isinstance(info, str):
+                info = json.loads(info)
+        except Exception:
+            info = {}
+        tag = (info.get('tag', '') or '').upper()
+        role = info.get('role', '') or ''
+        etype = (info.get('type', '') or '').lower()
+        is_ce = info.get('isContentEditable', False)
+
+        self.log.info(f"[JSON] smart_form: tag={tag} role={role} type={etype}")
+
+        # --- SELECT / COMBOBOX ---
+        if select:
+            if tag == 'SELECT':
+                self.cdp.form(selector, select=select, frame_id=frame_id)
+                return True
+            else:
+                # Custom select (MUI, React-Select, etc.): click to open, then click option
+                # Always look for the visible combobox trigger — the native input may be visible
+                # but clicking it won't open the dropdown
+                trigger = None
+                find_js = (
+                    f"(function(){{var e=document.querySelector('{esc}');"
+                    # First, try closest ancestor with role=combobox
+                    f"var cb=e?e.closest('[role=combobox]'):null;"
+                    f"if(cb&&cb.offsetWidth>0){{cb.setAttribute('data-cb-trigger','1');return'ref';}}"
+                    # Try prev/next sibling combobox
+                    f"var sib=e?e.previousElementSibling:null;"
+                    f"if(sib&&sib.getAttribute('role')==='combobox'&&sib.offsetWidth>0){{sib.setAttribute('data-cb-trigger','1');return'ref';}}"
+                    f"var nsib=e?e.nextElementSibling:null;"
+                    f"if(nsib&&nsib.getAttribute('role')==='combobox'&&nsib.offsetWidth>0){{nsib.setAttribute('data-cb-trigger','1');return'ref';}}"
+                    # Fallback: any combobox on the page near the label text
+                    f"return'none';}})()"
+                )
+                result = self.cdp.eval(find_js, frame_id)
+                result = (result or '').strip().strip('"')
+                if result == 'ref':
+                    trigger = '[data-cb-trigger="1"]'
+                    self.log.info(f"[JSON] smart_form: found combobox trigger for custom select")
+                else:
+                    # Last resort: click the element itself
+                    trigger = selector
+                    self.log.info(f"[JSON] smart_form: no combobox found, clicking selector directly")
+                self.cdp.click(trigger, frame_id)
+                time.sleep(0.6)
+                esc_val = select.replace("'", "\\'")
+                # Search for dropdown options (many different implementations)
+                opt_js = (
+                    f"(function(){{var opts=document.querySelectorAll("
+                    f"'[role=option],[role=listbox] li,[role=listbox] div,"
+                    f"ul[role=listbox] li,div[role=presentation] li,"
+                    f".MuiMenuItem-root,.MuiAutocomplete-option,"
+                    f"li[data-value],div[data-option-index]');"
+                    f"for(var i=0;i<opts.length;i++){{"
+                    f"if(opts[i].textContent.trim().indexOf('{esc_val}')!==-1&&opts[i].offsetWidth>0){{"
+                    f"opts[i].click();return'clicked';}}}}"
+                    f"return'not found';}})()"
+                )
+                result = self.cdp.eval(opt_js, frame_id)
+                self.log.info(f"[JSON] smart_form: custom select option click → {result.strip()}")
+                time.sleep(0.3)
+                return True
+
+        # --- RANGE / SLIDER ---
+        if etype == 'range' or role == 'slider':
+            if value:
+                esc_val = value.replace("'", "\\'")
+                self.cdp.eval(
+                    f"(function(){{var e=document.querySelector('{esc}');if(e){{"
+                    f"e.value={esc_val};e.dispatchEvent(new Event('input',{{bubbles:true}}));"
+                    f"e.dispatchEvent(new Event('change',{{bubbles:true}}));}}}})()",
+                    frame_id)
+                return True
+
+        # --- CHECKBOX / RADIO / TOGGLE ---
+        if check is not None or etype in ('checkbox', 'radio') or role in ('checkbox', 'radio', 'switch'):
+            # For native checkboxes, use cdp.form; for custom, click
+            if etype in ('checkbox', 'radio'):
+                self.cdp.form(selector, check="true" if check != "false" else "false",
+                             frame_id=frame_id)
+            else:
+                self.cdp.click(selector, frame_id)
+            return True
+
+        # --- CONTENTEDITABLE ---
+        if is_ce:
+            if value:
+                esc_val = value.replace("'", "\\'")
+                self.cdp.eval(
+                    f"(function(){{var e=document.querySelector('{esc}');if(e){{"
+                    f"e.textContent='{esc_val}';e.dispatchEvent(new Event('input',{{bubbles:true}}));}}}})()",
+                    frame_id)
+                return True
+
+        # --- TEXT INPUT (default) ---
+        self.cdp.form(selector, value=value, check=check, frame_id=frame_id)
+        return True
+
     def _check_success(self) -> bool:
         """Check all success conditions. Returns True if any match."""
         succ = self.config.get("success", {})
@@ -627,8 +852,9 @@ class JSONExecutor:
                 patterns = [patterns]
             if any(p in url for p in patterns):
                 return True
-        if "body_contains" in cond:
-            patterns = cond["body_contains"]
+        body_key = "body_contains" if "body_contains" in cond else ("text_contains" if "text_contains" in cond else None)
+        if body_key:
+            patterns = cond[body_key]
             if not isinstance(patterns, list):
                 patterns = [patterns]
             bl = body.lower()

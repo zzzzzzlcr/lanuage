@@ -38,12 +38,33 @@ class VariableResolver:
             domain = random.choice(["gmail.com","outlook.com","yahoo.com","hotmail.com"])
             return f"{name}{random.randint(10,999)}@{domain}"
         if gen == "password":
-            chars = string.ascii_letters + string.digits + "!@#%&*"
-            return ''.join(random.choice(chars) for _ in range(12))
+            chars = string.ascii_letters + string.digits
+            specials = "!@#%&*"
+            # Generate 10 alphanumeric + 1 guaranteed special + 1 mixed = 12 chars
+            pw = ''.join(random.choice(chars) for _ in range(10))
+            pw += random.choice(specials)
+            pw += random.choice(chars + specials)
+            # Shuffle so special char isn't always at position 10
+            pw_list = list(pw)
+            random.shuffle(pw_list)
+            return ''.join(pw_list)
         if gen == "phone":
             return f"{random.randint(200,999)}{random.randint(100,999)}{random.randint(1000,9999)}"
+        if gen == "ssn":
+            return ''.join(str(random.randint(0,9)) for _ in range(9))
         if gen == "zip":
             return random.choice(["90001","77001","33101","10001","60601","30301","44101","85001"])
+        if gen == "dob":
+            y = random.randint(1950, 2005)
+            m = random.randint(1, 12)
+            d = random.randint(1, 28)
+            return f"{m:02d}/{d:02d}/{y}"
+        if gen == "dob_month":
+            return f"{random.randint(1,12):02d}"
+        if gen == "dob_day":
+            return f"{random.randint(1,28):02d}"
+        if gen == "dob_year":
+            return str(random.randint(1950, 2005))
         if gen.startswith("choice:"):
             opts = gen[7:].split(",")
             return random.choice(opts).strip()
