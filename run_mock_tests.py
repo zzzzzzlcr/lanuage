@@ -99,7 +99,31 @@ CASES = [
 
     ("renttoown", "http://localhost:8080/renttoown",
      "成功: 页面出现 Thank You",
-     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 填写Address\n11. 等待0.5秒\n12. 填写City\n13. 等待0.5秒\n14. 填写ZIP\n15. 等待0.5秒\n16. 点击Submit\n17. 等待3-5秒"),
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 填写ZIP\n11. 等待0.5秒\n12. 点击Submit\n13. 等待3-5秒"),
+
+    ("auxxlift", "http://localhost:8080/auxxlift",
+     "成功: 页面出现 Thank you",
+     "1. 等待2-3秒\n2. 填写邮箱\n3. 等待0.5秒\n4. 点击Subscribe\n5. 等待3-5秒"),
+
+    ("betahealth", "http://localhost:8080/betahealth",
+     "成功: 页面出现 Thank you",
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 点击Submit\n9. 等待3-5秒"),
+
+    ("gravityform", "http://localhost:8080/gravityform",
+     "成功: 页面出现 Thank you",
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 点击Submit\n9. 等待3-5秒"),
+
+    ("connecthearing", "http://localhost:8080/connecthearing/form",
+     "成功: 页面出现 Thank you",
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 点击Submit\n11. 等待3-5秒"),
+
+    ("compareinsulation", "http://localhost:8080/compareinsulation/assessment",
+     "成功: 页面出现 Thank you",
+     "1. 等待2-3秒\n2. 填写ZIP\n3. 等待0.5秒\n4. 点击Get Estimate\n5. 等待3-5秒\n6. 填写Full Name\n7. 等待0.5秒\n8. 填写Email\n9. 等待0.5秒\n10. 填写Phone\n11. 等待0.5秒\n12. 点击Submit\n13. 等待3-5秒"),
+
+    ("reactapp", "http://localhost:8080/reactapp",
+     "成功: 页面出现 thank-you",
+     "1. 等待2-3秒\n2. 填写ZIP\n3. 等待0.5秒\n4. 填写Email\n5. 等待0.5秒\n6. 点击Submit\n7. 等待3-5秒"),
 ]
 
 def run():
