@@ -137,9 +137,21 @@ class JSONExecutor:
                     self.log.warning(f"[JSON]   {sid} failed (non-optional)")
 
             if not matched:
-                # Try advancing: click Next/Continue if visible (using CDP click)
-                self.log.info("[JSON] No matching steps, trying Next/Continue")
-                for btn in ["Next", "Continue", "Submit"]:
+                # Try advancing: click common wizard buttons (case-insensitive substring match)
+                self.log.info("[JSON] No matching steps, trying auto-advance")
+                advance_btns = ["Next", "Continue", "Submit", "Get estimate", "Get Estimate",
+                    "Start", "Begin", "Get Started", "Find out", "Yes", "YES", "No", "NO",
+                    "Record Request", "Get My", "See", "Go", "Apply", "Check", "Qualify",
+                    "Download", "Subscribe", "UNLOCK", "Send"]
+                for btn_text in advance_btns:
+                    esc = btn_text.replace("'", "\\'")
+                    js_mark = (
+                        f"(function(){{var bs=document.querySelectorAll('button');"
+                        f"for(var i=0;i<bs.length;i++){{"
+                        f"if(bs[i].textContent.trim().toLowerCase().indexOf('{esc.lower()}')!==-1&&bs[i].offsetWidth>0)"
+                        f"{{bs[i].setAttribute('data-auto-advance','1');return'found';}}}}"
+                        f"return'none';}})()"
+                    )
                     # Mark matching button then CDP click it
                     esc = btn.replace("'", "\\'")
                     js_mark = (

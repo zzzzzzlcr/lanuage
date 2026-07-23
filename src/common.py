@@ -271,6 +271,8 @@ class CDPHelper:
 
         Returns True if page stabilized, False if timed out.
         """
+        # Suppress dialogs first (alert blocks CDP)
+        self.eval("window.alert=function(){};window.confirm=function(){return true;};window.prompt=function(){return'';};")
         deadline = time.time() + timeout
         last_body = ""
         stable_count = 0
