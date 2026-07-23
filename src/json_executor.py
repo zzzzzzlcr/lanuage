@@ -606,6 +606,10 @@ class JSONExecutor:
                                     return False
                     else:
                         selector = self.finder.find(find, fctx)
+                    # Fallback: LLM may use "selector" field directly
+                    if not selector and step.get("selector"):
+                        sel = step["selector"]
+                        selector = sel.get("primary", sel) if isinstance(sel, dict) else sel
                     if not selector:
                         if optional:
                             return True
@@ -652,6 +656,9 @@ class JSONExecutor:
                                     return False
                     else:
                         selector = self.finder.find(find, fctx)
+                    if not selector and step.get("selector"):
+                        sel = step["selector"]
+                        selector = sel.get("primary", sel) if isinstance(sel, dict) else sel
                     if not selector:
                         self.log.warning(f"[JSON] form: element not found: {find or field}")
                         return False

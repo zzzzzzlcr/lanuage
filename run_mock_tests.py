@@ -63,6 +63,43 @@ CASES = [
     ("carwarranty", "http://localhost:8080/carwarranty",
      "成功: 页面出现 Your quotes are ready",
      "1. 等待2-3秒\n2. 选择年份（下拉框，选2020）\n3. 等待0.5秒\n4. 点击Continue\n5. 等待2-3秒\n6. 选择品牌（下拉框，选Toyota）\n7. 等待0.5秒\n8. 点击Continue\n9. 等待2-3秒\n10. 选择型号（下拉框，选Camry）\n11. 等待0.5秒\n12. 点击Continue\n13. 等待2-3秒\n14. 填写Mileage\n15. 等待0.5秒\n16. 点击Continue\n17. 等待3-5秒\n18. 填写Full Name\n19. 等待0.5秒\n20. 填邮箱\n21. 等待0.5秒\n22. 填写Phone\n23. 等待0.5秒\n24. 点击Get My Quote\n25. 等待3-5秒"),
+
+    # ─── Tier 3: Additional single-page forms ───
+    ("solarforall", "http://localhost:8080/solarforall",
+     "成功: 页面出现 Thank You",
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 填写Address\n11. 等待0.5秒\n12. 勾选同意条款\n13. 等待0.5秒\n14. 点击Submit\n15. 等待3-5秒"),
+
+    ("showerlead", "http://localhost:8080/showerlead",
+     "成功: 页面出现 Your Estimate is Ready",
+     "1. 等待2-3秒\n2. 选择房主身份\n3. 等待0.5秒\n4. 填写ZIP\n5. 等待0.5秒\n6. 点击Get My Estimate\n7. 等待3-5秒\n8. 填写Full Name\n9. 等待0.5秒\n10. 填写Phone\n11. 等待0.5秒\n12. 点击Submit\n13. 等待3-5秒"),
+
+    ("nexaralai", "http://localhost:8080/nexaralai/contact",
+     "成功: 页面出现 Message Sent",
+     "1. 等待2-3秒\n2. 填写姓名\n3. 等待0.5秒\n4. 填写邮箱\n5. 等待0.5秒\n6. 填写留言\n7. 等待0.5秒\n8. 点击Send Message\n9. 等待3-5秒"),
+
+    ("tarotcard", "http://localhost:8080/tarotcard",
+     "成功: 页面出现 Your Reading is Complete",
+     "1. 等待2-3秒\n2. 填写姓名\n3. 等待0.5秒\n4. 点击Get My Reading\n5. 等待3-5秒"),
+
+    ("freedomdebt", "http://localhost:8080/freedomdebt",
+     "成功: 页面出现 Congratulations",
+     "1. 等待2-3秒\n2. 选择债务金额（滚动条）\n3. 等待0.5秒\n4. 点击Continue\n5. 等待3-5秒\n6. 填写First Name\n7. 等待0.5秒\n8. 填写Last Name\n9. 等待0.5秒\n10. 填写Email\n11. 等待0.5秒\n12. 填写Phone\n13. 等待0.5秒\n14. 点击Continue\n15. 等待3-5秒\n16. 填写Address\n17. 等待0.5秒\n18. 填写City\n19. 等待0.5秒\n20. 填写ZIP\n21. 等待0.5秒\n22. 点击Continue\n23. 等待3-5秒\n24. 填写SSN\n25. 等待0.5秒\n26. 勾选同意条款\n27. 等待0.5秒\n28. 点击Check My Eligibility\n29. 等待3-5秒"),
+
+    ("healthwindow", "http://localhost:8080/healthwindow",
+     "成功: 页面出现 DONE",
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 填写Address\n11. 等待0.5秒\n12. 填写City\n13. 等待0.5秒\n14. 填写ZIP\n15. 等待0.5秒\n16. 点击Submit\n17. 等待3-5秒"),
+
+    ("lilacworks", "http://localhost:8080/lilacworks",
+     "成功: 页面出现 Thank you",
+     "1. 等待2-3秒\n2. 选择Home Type（下拉框）\n3. 等待0.5秒\n4. 选择Province（下拉框）\n5. 等待0.5秒\n6. 填写Monthly Bills\n7. 等待0.5秒\n8. 点击Estimate Savings\n9. 等待3-5秒\n10. 填写First Name\n11. 等待0.5秒\n12. 填写Last Name\n13. 等待0.5秒\n14. 填写Email\n15. 等待0.5秒\n16. 填写Phone\n17. 等待0.5秒\n18. 勾选同意条款\n19. 等待0.5秒\n20. 点击Get My Results\n21. 等待3-5秒"),
+
+    ("seniorbath", "http://localhost:8080/seniorbath/form",
+     "成功: 页面出现 Thank You",
+     "1. 等待2-3秒\n2. 填写ZIP\n3. 等待0.5秒\n4. 点击Get Estimate\n5. 等待3-5秒\n6. 填写Full Name\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 点击Submit\n11. 等待3-5秒"),
+
+    ("renttoown", "http://localhost:8080/renttoown",
+     "成功: 页面出现 Thank You",
+     "1. 等待2-3秒\n2. 填写First Name\n3. 等待0.5秒\n4. 填写Last Name\n5. 等待0.5秒\n6. 填写Email\n7. 等待0.5秒\n8. 填写Phone\n9. 等待0.5秒\n10. 填写Address\n11. 等待0.5秒\n12. 填写City\n13. 等待0.5秒\n14. 填写ZIP\n15. 等待0.5秒\n16. 点击Submit\n17. 等待3-5秒"),
 ]
 
 def run():

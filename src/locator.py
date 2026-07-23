@@ -236,7 +236,7 @@ class FieldLocator:
 
     def _candidates_exact_attrs(self, field, frame_id, container) -> List[dict]:
         """Find all inputs matching name/aria-label/data-testid."""
-        name = field.get("label", "") or field.get("name", "")
+        name = field.get("label", "") or field.get("name", "") or field.get("id", "")
         if not name: return []
         results = []
         root = container or "document"

@@ -288,6 +288,9 @@ when规则:
                         return sr
                 else:
                     selector = finder.find(find)
+                if not selector and step.get("selector"):
+                    sel = step["selector"]
+                    selector = sel.get("primary", sel) if isinstance(sel, dict) else sel
                 if not selector:
                     if optional: return sr
                     sr.success = False
@@ -310,6 +313,9 @@ when规则:
                         return sr
                 else:
                     selector = finder.find(find)
+                if not selector and step.get("selector"):
+                    sel = step["selector"]
+                    selector = sel.get("primary", sel) if isinstance(sel, dict) else sel
                 if not selector:
                     sr.success = False
                     sr.error = f"Element not found: {find or field}"
