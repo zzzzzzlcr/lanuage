@@ -334,7 +334,8 @@ when规则:
                         value = None
                         self.log.info(f"[auto-fix] Converted value→select for <select> {selector}")
 
-                ok = self._pipeline_form(selector, value=value, select=select)
+                check = step.get('check')
+                ok = self._pipeline_form(selector, value=value, select=select, check=check)
                 if not ok:
                     sr.success = False
                     sr.error = f"Form failed for selector {selector}"
@@ -371,8 +372,20 @@ when规则:
 
         return sr
 
-    def _pipeline_form(self, selector, value=None, select=None, frame_id=""):
+    def _pipeline_form(self, selector, value=None, select=None, check=None, frame_id=""):
         """Handle form interaction — delegates custom selects to click-based approach."""
+        # Checkbox: verify current state before toggling
+        if check is not None:
+            esc = selector.replace("'", "\\'")
+            current = self.cdp.eval(
+                f"(function(){{var e=document.querySelector('{esc}');"
+                f"return e?String(e.checked):'';}})()", frame_id)
+            current = (current or '').strip().strip('"')
+            want_checked = (check == "true" or check is True)
+            is_checked = (current == 'true')
+            if want_checked == is_checked:
+                self.log.info(f"[pipeline] checkbox already in desired state, skip")
+                return True
         if select:
             esc = selector.replace("'", "\\'")
             tag = self.cdp.eval(
