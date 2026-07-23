@@ -470,6 +470,13 @@ when规则:
   * 看清楚iframe的src域名, 给步骤加 "frame":{"url_contains":"那个域名"}
   * 点击和填写都要带frame
 - eval的script字段必须要有内容，不能为空
+- **selector 格式规定（重要！）**:
+  * click 步骤用 find: {"text": "按钮文字"} 或 find: {"id": "按钮id"}
+  * form 步骤用 field: {"label": "标签文字", "type": "类型"} 或 field: {"id": "输入框id", "type": "类型"}
+  * 绝对不要用 Playwright 语法（:has-text()、>>、nth= 等）
+  * 绝对不要用 XPath（//button、contains 等）
+  * 绝对不要用 "selector" 字段代替 find/field，除非是简单的 CSS selector 如 "#id" 或 ".class"
+  * CSS selector 示例: "#fname"、".btn-primary"、"[name=phone]"、"[data-testid=submit]"
 
 ## 输出
 只输出修正后的完整JSON，不要解释。格式和原JSON完全一致。'''
