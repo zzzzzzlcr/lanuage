@@ -70,7 +70,7 @@ class JSONPipeline:
 | 勾选 XXX | form | {"action":"form","field":{"label":"XXX"},"check":"true"} |
 | 滚动 | scroll | {"action":"scroll","min":100,"max":500} |
 | 拖动XXX（滚动条） | eval | {"action":"eval","script":"var sl=document.querySelector('input[type=range]');..."} |
-**绝对不要使用 delay、navigate、fill、type、input 等不存在的 action！**
+**可用 action：wait, click, form, select, scroll, eval, delay, goto, report**
 
 ### 1. 按钮点击
 - 普通按钮: {"action":"click","find":{"text":"按钮文字"}} (不要加optional除非运营写了"(可选)")
@@ -328,7 +328,11 @@ when规则:
                         value = None
                         self.log.info(f"[auto-fix] Converted value→select for <select> {selector}")
 
-                self.cdp.form(selector, value=value, select=select)
+                ok = self._pipeline_form(selector, value=value, select=select)
+                if not ok:
+                    sr.success = False
+                    sr.error = f"Form failed for selector {selector}"
+                    return sr
 
             elif action == 'wait_for':
                 timeout = step.get('timeout', 30)
@@ -360,6 +364,45 @@ when规则:
             sr.error = f"{type(e).__name__}: {e}"
 
         return sr
+
+    def _pipeline_form(self, selector, value=None, select=None, frame_id=""):
+        """Handle form interaction — delegates custom selects to click-based approach."""
+        if select:
+            esc = selector.replace("'", "\\'")
+            tag = self.cdp.eval(
+                f"(function(){{var e=document.querySelector('{esc}');"
+                f"return e?e.tagName:'';}})()", frame_id)
+            tag = (tag or '').strip().strip('"').upper()
+            if tag and tag != 'SELECT':
+                self.log.info(f"[pipeline] custom select (tag={tag}), using click-based approach")
+                # Find and click the combobox trigger
+                find_js = (
+                    f"(function(){{var e=document.querySelector('{esc}');"
+                    f"if(e&&e.getAttribute('role')==='combobox'){{e.setAttribute('data-cb-t','1');return'ref';}}"
+                    f"var cb=e?e.closest('[role=combobox]'):null;"
+                    f"if(cb&&cb.offsetWidth>0){{cb.setAttribute('data-cb-t','1');return'ref';}}"
+                    f"var s=e?e.previousElementSibling:null;"
+                    f"if(s&&s.getAttribute('role')==='combobox'){{s.setAttribute('data-cb-t','1');return'ref';}}"
+                    f"var n=e?e.nextElementSibling:null;"
+                    f"if(n&&n.getAttribute('role')==='combobox'){{n.setAttribute('data-cb-t','1');return'ref';}}"
+                    f"return'none';}})()"
+                )
+                r = self.cdp.eval(find_js, frame_id)
+                r = (r or '').strip().strip('"')
+                trigger = '[data-cb-t="1"]' if r == 'ref' else selector
+                self.cdp.click(trigger, frame_id)
+                time.sleep(0.6)
+                # Click the option
+                esc_val = select.replace("'", "\\'")
+                self.cdp.eval(
+                    f"(function(){{var opts=document.querySelectorAll('[role=option]');"
+                    f"for(var i=0;i<opts.length;i++){{"
+                    f"if(opts[i].textContent.trim().indexOf('{esc_val}')!==-1&&opts[i].offsetWidth>0){{"
+                    f"opts[i].click();return;}}}}}})()", frame_id)
+                time.sleep(0.3)
+                return True
+        self.cdp.form(selector, value=value, select=select)
+        return True
 
     def _check_success_static(self, succ: dict, url: str, body: str) -> bool:
         """Check success conditions without executor (static version)."""

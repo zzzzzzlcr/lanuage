@@ -70,7 +70,7 @@ when_<条件>: <做什么>
 | 滚动 | scroll | `{"action":"scroll","min":100,"max":500}` |
 | 拖动(滚动条) | eval | `{"action":"eval","script":"..."}` |
 
-**不存在的 action：delay, navigate, fill, type, input —— 禁止使用！**
+**可用 action：wait / click / form / select / scroll / eval / delay / goto / report**
 
 ## 关键规则
 

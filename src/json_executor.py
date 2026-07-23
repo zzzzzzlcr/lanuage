@@ -438,15 +438,22 @@ class JSONExecutor:
                 "(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()",
                 self._frame_id)
             # Randomly click any visible option-like element
+            # Scope to container if specified, otherwise filter nav/CTA by position
+            container = step.get("container", "")
+            scope = container if container else "document"
             # Prefer labels/divs over buttons (buttons are usually CTAs, not options)
             js = (
                 f"var skip={json.dumps(skip_words)};"
-                f"var r=[];var els=document.querySelectorAll('button,a,label,li,div,[role=button],[role=option]');"
+                f"var r=[];var els=({scope}).querySelectorAll('button,a,label,li,div,[role=button],[role=option]');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"var e=els[i];var t=e.textContent.trim();"
                 f"if(!e.offsetWidth||t.length<2||t.length>60)continue;"
                 f"if(e.tagName==='LABEL'&&e.htmlFor)continue;"
                 f"if(e.tagName==='INPUT'||e.tagName==='TEXTAREA'||e.tagName==='SELECT')continue;"
+                # Exclude nav/header/footer elements (position-based, not class-based)
+                f"if(e.closest('nav,header,footer'))continue;"
+                f"var rect=e.getBoundingClientRect();"
+                f"if(rect.top<50||rect.bottom>window.innerHeight-50)continue;"
                 f"var bad=false;for(var s=0;s<skip.length;s++){{"
                 f"if(t.indexOf(skip[s])!==-1){{bad=true;break;}}}}"
                 f"if(!bad)r.push(i);}}"
@@ -681,6 +688,14 @@ class JSONExecutor:
                         self._execute_step(s)
                     return True
 
+                elif action in ("goto", "navigate"):
+                    # Navigation step: just change URL
+                    target = step.get("url", "")
+                    if target:
+                        self.cdp.eval(f"(function(){{window.location.href='{target}';}})()")
+                        time.sleep(2)
+                    return True
+
                 elif action == "select":
                     return self._select_option(step)
 
@@ -744,9 +759,11 @@ class JSONExecutor:
                 trigger = None
                 find_js = (
                     f"(function(){{var e=document.querySelector('{esc}');"
+                    # Check if element itself is the combobox
+                    f"if(e&&e.getAttribute('role')==='combobox'&&e.offsetWidth>0){{e.setAttribute('data-cb-trigger','1');return'ref';}}"
                     # First, try closest ancestor with role=combobox
                     f"var cb=e?e.closest('[role=combobox]'):null;"
-                    f"if(cb&&cb.offsetWidth>0){{cb.setAttribute('data-cb-trigger','1');return'ref';}}"
+                    f"if(cb&&cb.getAttribute('data-cb-trigger')!=='1'&&cb.offsetWidth>0){{cb.setAttribute('data-cb-trigger','1');return'ref';}}"
                     # Try prev/next sibling combobox
                     f"var sib=e?e.previousElementSibling:null;"
                     f"if(sib&&sib.getAttribute('role')==='combobox'&&sib.offsetWidth>0){{sib.setAttribute('data-cb-trigger','1');return'ref';}}"
