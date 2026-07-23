@@ -78,6 +78,8 @@ class JSONExecutor:
         loop_until = self.config.get("loop_until", {})
         # Global frame_url: resolve once, use for all steps
         global_frame = self.config.get("frame_url", "")
+        if isinstance(global_frame, dict):
+            global_frame = global_frame.get("url_contains", "")
         if global_frame:
             self._frame_id = self.locator._resolve_frame(global_frame)
         # Normalize loop_until format (LLM generates various shapes)
@@ -520,17 +522,26 @@ class JSONExecutor:
         optional = step.get("optional", False)
 
         # Resolve frame_id: supports "frame_url" (LLM) and "frame" (legacy) keys
+        # Normalize: LLM may generate frame_url as string or dict {"url_contains":"..."}
         frame_hint = step.get("frame_url") or step.get("frame")
+        if isinstance(frame_hint, dict):
+            frame_hint = frame_hint.get("url_contains", "")
         if frame_hint:
             self._frame_id = self.locator._resolve_frame(frame_hint)
         # Also check field-level frame_url
         field = step.get("field", {}) or {}
-        if not self._frame_id and field.get("frame_url"):
-            self._frame_id = self.locator._resolve_frame(field["frame_url"])
+        field_frame = field.get("frame_url", "")
+        if isinstance(field_frame, dict):
+            field_frame = field_frame.get("url_contains", "")
+        if not self._frame_id and field_frame:
+            self._frame_id = self.locator._resolve_frame(field_frame)
         # Also check find-level
         find = step.get("find", {}) or {}
-        if not self._frame_id and find.get("frame_url"):
-            self._frame_id = self.locator._resolve_frame(find["frame_url"])
+        find_frame = find.get("frame_url", "")
+        if isinstance(find_frame, dict):
+            find_frame = find_frame.get("url_contains", "")
+        if not self._frame_id and find_frame:
+            self._frame_id = self.locator._resolve_frame(find_frame)
 
         for attempt in range(retry):
             try:
