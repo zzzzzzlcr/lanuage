@@ -187,6 +187,8 @@ class JSONExecutor:
             try:
                 field = cond["field_exists"]
                 frame_hint = field.get("frame_url", "")
+                if isinstance(frame_hint, dict):
+                    frame_hint = frame_hint.get("url_contains", "")
                 ftype = field.get("type", "").lower()
 
                 # Button detection: search by visible text, not locator
