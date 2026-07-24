@@ -128,65 +128,54 @@ class WizardExplorer:
         return state
 
     def _fingerprint(self, state: dict) -> str:
-        """Stable fingerprint: URL path + heading + fields + buttons."""
+        """Stable fingerprint: URL path + heading + fields + buttons + body preview."""
         key = (
             state.get("url", "").split("?")[0]
             + "|" + (state.get("heading") or "")
             + "|" + json.dumps([f.get("id","") or f.get("ph","") for f in state.get("fields", [])], sort_keys=True)
             + "|" + json.dumps([b.get("text","") for b in state.get("buttons", [])], sort_keys=True)
+            + "|" + (state.get("body","")[:200])  # body changes when wizard steps advance
         )
         return hashlib.md5(key.encode()).hexdigest()[:16]
 
     # ── LLM Decision ──────────────────────────────────────────────
 
     def _decide_action(self, state: dict, success_desc: str, round_n: int) -> dict:
-        """Ask LLM to pick ONE action based on current page state."""
-        # Simplify: only send the most relevant info
-        fields_str = ", ".join([f.get("ph") or f.get("id") or f.get("type","?") for f in state.get("fields",[])][:5])
-        buttons_str = ", ".join([b["text"] for b in state.get("buttons",[])][:8])
-        options_str = ", ".join(state.get("options", [])[:8])
-        body_preview = state.get("body","")[:200]
+        """Ask LLM to pick ONE action based on current page state. Uses pro model for accuracy."""
+        if not self.llm:
+            return None
+
+        btns = [b for b in state.get("buttons",[]) if b["text"] not in ("MockServer","Privacy Policy","Terms of Service","Contact","©")]
+        fields = state.get("fields", [])[:8]
+        opts = state.get("options", [])[:6]
 
         prompt = f"""当前页面: {state.get('heading','')}
-按钮: {buttons_str}
-输入框: {fields_str}
-选项: {options_str}
-页面文字: {body_preview}
+可见按钮: {json.dumps([b['text'] for b in btns], ensure_ascii=False)}
+输入框: {json.dumps([{f.get('ph') or f.get('id','?') for f in fields}], ensure_ascii=False)}
+选项: {json.dumps(opts, ensure_ascii=False)}
+页面文字: {(state.get('body','') or '')[:200]}
 
-成功条件: {success_desc}
-已执行{len(self.trajectory)}步。下一步做什么？返回JSON: {{"action":"select|click|form|wait|done"}}
-select: {{"action":"select","selection_strategy":{{"type":"random"}}}}
-click: {{"action":"click","find":{{"text":"按钮文字"}}}}
-form: {{"action":"form","field":{{"label":"字段","type":"text"}},"value":"值"}}
-done: {{"action":"done"}}
+返回JSON选择下一步: {{"action":"select|click|form|done"}}
+select → 随机点选项: {{"action":"select","selection_strategy":{{"type":"random"}}}}
+click → 点按钮: {{"action":"click","find":{{"text":"按钮上的文字"}}}}
+form → 填字段: {{"action":"form","field":{{"label":"描述","type":"text"}},"value":"填的值"}}
+done → 已成功: {{"action":"done"}}
 只返回JSON"""
 
         try:
             response = self.llm.chat.completions.create(
-                model="deepseek-v4-flash",
+                model="deepseek-v4-pro",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0, max_tokens=200
             )
             content = response.choices[0].message.content.strip()
             if content.startswith("```"): content = content.split("\n", 1)[1].rsplit("```", 1)[0]
-            # Fix common JSON issues
             content = content.strip().rstrip(",")
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                # Try to extract just the action field
-                import re
-                m = re.search(r'"action"\s*:\s*"(\w+)"', content)
-                if m:
-                    atype = m.group(1)
-                    basic = {"action": atype}
-                    tm = re.search(r'"text"\s*:\s*"([^"]+)"', content)
-                    if tm: basic["find"] = {"text": tm.group(1)}
-                    self.log.info(f"[Explorer] LLM raw: {content[:100]}, recovered: {basic}")
-                    return basic
-            return None
+            action = json.loads(content)
+            self.log.info(f"[Explorer] LLM chose: {json.dumps(action)}")
+            return action
         except Exception as e:
-            self.log.error(f"[Explorer] LLM decision failed: {e}")
+            self.log.error(f"[Explorer] LLM failed: {e}, raw={content[:100] if 'content' in dir() else 'N/A'}")
             return None
 
     # ── Execute & Verify ──────────────────────────────────────────
