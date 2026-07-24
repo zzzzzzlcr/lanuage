@@ -21,6 +21,7 @@ class WizardExplorer:
         self.log = log or logging.getLogger(__name__)
         self.visited_states = set()  # state fingerprints already seen
         self.trajectory = []         # confirmed (state, action, transition) tuples
+        self.filled_fields = set()   # track which fields we've already filled this round
 
     # ── Public API ────────────────────────────────────────────────
 
@@ -65,6 +66,9 @@ class WizardExplorer:
             # Execute the action
             ok, new_state = self._execute_and_verify(state, action)
             if ok:
+                # If page actually changed, reset filled field tracking
+                if new_state["fingerprint"] != fp:
+                    self.filled_fields.clear()
                 self.trajectory.append({
                     "state_fp": fp,
                     "action": action,
@@ -91,7 +95,7 @@ class WizardExplorer:
         r.fields = [];
         for (var i=0;i<inputs.length;i++) {
             var e=inputs[i];
-            if (e.offsetWidth>0 || e.id) {
+            if (e.offsetWidth>0) {
                 r.fields.push({tag:e.tagName,type:e.type||'',id:e.id||'',name:e.name||'',
                     ph:e.placeholder||'',aria:e.getAttribute('aria-label')||'',
                     role:e.getAttribute('role')||'',ow:e.offsetWidth});
@@ -141,45 +145,70 @@ class WizardExplorer:
     # ── LLM Decision ──────────────────────────────────────────────
 
     def _decide_action(self, state: dict, success_desc: str, round_n: int) -> dict:
-        """Pick ONE action based on current page state. Code rules first, LLM as fallback."""
-        btns = [b for b in state.get("buttons",[]) if b["text"] not in ("MockServer","Privacy Policy","Terms of Service","Contact","©")]
-        fields = [f for f in state.get("fields",[]) if f.get("ph") or f.get("id")]
+        """Pick ONE action based on current page state."""
+        btns = {b["text"]: b for b in state.get("buttons",[]) if b["text"] not in ("MockServer","Privacy Policy","Terms of Service","Contact","©")}
+        fields = {f.get("id","") or f.get("ph",""): f for f in state.get("fields",[]) if f.get("ph") or f.get("id")}
         opts = state.get("options", [])
         body = state.get("body","") or ""
-        btn_texts = [b["text"] for b in btns]
-        action_btns = [t for t in btn_texts if t in ("Get Estimate","Record Request","Continue","Next","Submit","Get My Results","See the Full Breakdown","Get My Free Guide","UNLOCK HERE","Subscribe","Send Message")]
+        has_done = "Ready" in body or "Thank" in body or "Complete" in body or "Congratulations" in body
 
-        # Rule 1: options visible + no trajectory → select random
-        if opts and len(self.trajectory) == 0:
-            return {"action": "select", "selection_strategy": {"type": "random"}}
-
-        # Rule 2: visible form fields → fill them (one at a time)
-        if fields:
-            f = fields[0]
-            label = f.get("ph") or f.get("id") or "name"
-            fid = f.get("id", "")
-            ftype = "text"
-            if "email" in label.lower() or "email" in fid.lower(): ftype = "email"
-            elif "zip" in label.lower() or "zip" in fid.lower() or "post" in label.lower(): ftype = "zip"
-            elif "phone" in label.lower() or "phone" in fid.lower() or "tel" in fid.lower(): ftype = "tel"
-            elif "password" in label.lower() or "pw" in fid.lower(): ftype = "password"
-            elif "area" in label.lower(): ftype = "area"
-            state["fields"] = fields[1:]
-            return {"action": "form", "field": {"label": label, "id": fid, "type": ftype}}
-
-        # Rule 3: action buttons → click the most relevant one
-        if action_btns:
-            return {"action": "click", "find": {"text": action_btns[0]}}
-
-        # Rule 4: any visible button → click it
-        if btns:
-            return {"action": "click", "find": {"text": btns[0]["text"]}}
-
-        # Rule 5: success check → done
-        if "Estimate" in body or "Ready" in body or "Thank" in body or "Complete" in body:
+        # Check success first
+        if has_done:
             return {"action": "done"}
 
-        # Rule 6: nothing else to do
+        # Decision priority (matching manual walk that works):
+        # 1. Radio/checkbox options → select random (only once at start)
+        if opts and len(self.trajectory) == 0 and not self.filled_fields:
+            return {"action": "select", "selection_strategy": {"type": "random"}}
+
+        # 2. Fill ZIP/Postcode field (always first in wizards)
+        zip_keys = [k for k in fields if "zip" in k.lower() or "post" in k.lower()]
+        if zip_keys and zip_keys[0] not in self.filled_fields:
+            k = zip_keys[0]; f = fields[k]
+            self.filled_fields.add(k)
+            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "zip"}}
+
+        # 3. Click "Get Estimate" / "Get Quote" / "Continue" / "Next"
+        for btn_text in ("Get Estimate","Get Quote","Continue","Next"):
+            if btn_text in btns:
+                return {"action": "click", "find": {"text": btn_text}}
+
+        # 4. Fill Name/Phone/Email fields (after wizard page transition)
+        name_keys = [k for k in fields if "name" in k.lower() or "full" in k.lower()]
+        if name_keys and name_keys[0] not in self.filled_fields:
+            k = name_keys[0]; f = fields[k]
+            self.filled_fields.add(k)
+            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "text"}}
+
+        phone_keys = [k for k in fields if "phone" in k.lower() or "tel" in k.lower()]
+        if phone_keys and phone_keys[0] not in self.filled_fields:
+            k = phone_keys[0]; f = fields[k]
+            self.filled_fields.add(k)
+            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "tel"}}
+
+        email_keys = [k for k in fields if "email" in k.lower() or "mail" in k.lower()]
+        if email_keys and email_keys[0] not in self.filled_fields:
+            k = email_keys[0]; f = fields[k]
+            self.filled_fields.add(k)
+            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "email"}}
+
+        # 5. Fill remaining fields
+        unfilled = [k for k in fields if k not in self.filled_fields]
+        if unfilled:
+            k = unfilled[0]; f = fields[k]
+            self.filled_fields.add(k)
+            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "text"}}
+
+        # 6. Click action buttons
+        for btn_text in ("Record Request","Submit","Get My Results","See the Full Breakdown","Get My Free Guide","UNLOCK HERE","Subscribe","Send Message"):
+            if btn_text in btns:
+                return {"action": "click", "find": {"text": btn_text}}
+
+        # 7. Any button as last resort
+        if btns:
+            first = list(btns.keys())[0]
+            return {"action": "click", "find": {"text": first}}
+
         return {"action": "done"}
 
     # ── Execute & Verify ──────────────────────────────────────────
