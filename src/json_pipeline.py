@@ -203,20 +203,21 @@ when规则:
 
             # Check if success triggered early
             info = self.cdp.get_page_info()
-            url = info.get('url', '')
-            body = self.cdp.eval(
-                "(function(){return document.body?document.body.innerText.substring(0,2000):'';})()")
-
+            # Poll for success: some pages show success text with delay (setTimeout, animation)
             succ_config = config.get('success', {})
-            if self._check_success_static(succ_config, url, body):
-                result.success_triggered = True
-                result.success_steps = i + 1
-                result.passed = True
-                result.final_url = url
-                result.final_body = body
-                return result
-
-            time.sleep(0.3)
+            for _ in range(4):  # poll 4 times with 0.5s intervals
+                info = self.cdp.get_page_info()
+                url = info.get('url', '')
+                body = self.cdp.eval(
+                    "(function(){return document.body?document.body.innerText.substring(0,2000):'';})()")
+                if self._check_success_static(succ_config, url, body):
+                    result.success_triggered = True
+                    result.success_steps = i + 1
+                    result.passed = True
+                    result.final_url = url
+                    result.final_body = body
+                    return result
+                time.sleep(0.5)
 
         result.success_steps = len(steps)
         # Success = the success conditions actually triggered, not just all steps ran
