@@ -71,6 +71,8 @@ class JSONPipeline:
 | 滚动 | scroll | {"action":"scroll","min":100,"max":500} |
 | 拖动XXX（滚动条） | eval | {"action":"eval","script":"var sl=document.querySelector('input[type=range]');..."} |
 **可用 action：wait, click, form, select, scroll, eval, delay, goto, report**
+**重要: field.label 和 find.text 必须用英文！页面上都是英文字，不要用中文描述里的词。**
+**例: 运营写"填邮箱"→label:"email"; 运营写"点击提交"→find:{"text":"Submit"}**
 
 ### 1. 按钮点击
 - 普通按钮: {"action":"click","find":{"text":"按钮文字"}} (不要加optional除非运营写了"(可选)")
@@ -463,7 +465,14 @@ when规则:
                 # Also fix the form field similarly
                 if fe.get("placeholder") and s.get("field") and not s["field"].get("id") and not s["field"].get("label"):
                     s["field"]["placeholder"] = fe["placeholder"]
-                    self.log.info(f\"[post-fix] Added placeholder={fe['placeholder']} from snapshot\")
+                    self.log.info("[post-fix] Added placeholder=%s from snapshot", fe['placeholder'])
+
+        # 2b. For state machine: ensure field_exists steps have id (prevents re-execution)
+        if config.get("loop_until"):
+            for s in config.get("steps", []):
+                if (s.get("when", {}) or {}).get("field_exists") and not s.get("id"):
+                    s["id"] = "step_" + (s.get("field", {}).get("label") or s.get("field", {}).get("type") or "form")
+                    self.log.info("[post-fix] Added id=%s to state machine step", s["id"])
 
         # 3. For state machine, ensure select/random step exists
         if config.get("loop_until"):
