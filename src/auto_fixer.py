@@ -74,14 +74,19 @@ def _fix_wait_eval(step):
 
 
 def _fix_button_eval(step):
-    """Convert click steps to eval for reliability (especially in iframes)."""
+    """Only convert click to eval for iframe buttons (CDP click fails in iframes).
+    Regular buttons should keep structured click with find field."""
     if step.get("action") != "click":
         return
-    find = step.get("find", {})
+    # Only convert for iframe steps — keep structured click for everything else
+    field = step.get("field", {}) or {}
+    find = step.get("find", {}) or {}
+    has_frame = (step.get("frame_url") or field.get("frame_url") or find.get("frame_url"))
+    if not has_frame:
+        return  # preserve structured click for non-iframe buttons
     text = find.get("text", "")
     if not text:
         return
-    # Convert to eval
     esc = text.replace("'", "\\'")
     step["action"] = "eval"
     step["script"] = (
@@ -104,9 +109,9 @@ def _fix_duration_ms(step):
 
 
 def _remove_form_id(step):
-    """Remove id from form steps so they can retry each round."""
-    if step.get("field") and "id" in step:
-        del step["id"]
+    """Keep id on form steps — state machine needs them for deduplication.
+    Previously removed id to allow retry, but field_exists+when handles this properly."""
+    pass  # no-op: keep form step ids intact
 
 
 def _fix_success(config):

@@ -151,13 +151,17 @@ when规则:
 ## 输出要求
 只输出JSON。不要任何解释。'''
 
-    def generate(self, description: str) -> dict:
-        """LLM generates JSON config from natural language."""
+    def generate(self, description: str, page_diag: str = "") -> dict:
+        """LLM generates JSON config from natural language.
+        page_diag: optional first-page DOM snapshot (visible fields, buttons, iframes)."""
+        user_msg = description
+        if page_diag:
+            user_msg = f"## 当前页面可见元素（只能引用下面列出的按钮文字和字段，不要猜测）：\n{page_diag}\n\n## 运营描述：\n{description}"
         response = self.llm.chat.completions.create(
             model=self.model,
             messages=[
                 {'role': 'system', 'content': self.GENERATE_PROMPT},
-                {'role': 'user', 'content': description}
+                {'role': 'user', 'content': user_msg}
             ],
             temperature=0.1
         )
@@ -483,6 +487,21 @@ when规则:
                     s["optional"] = True
                     self.log.info("[post-fix] Added when:{}+optional to state machine click step")
 
+        # 2d. For state machine: fix click steps to use text from snapshot (not id)
+        snap_buttons = getattr(self, '_last_buttons', [])
+        if config.get("loop_until") and snap_buttons:
+            for s in config.get("steps", []):
+                fid = (s.get("find", {}) or {}).get("id", "")
+                if fid and s.get("action") in ("click", "eval"):
+                    for btn in snap_buttons:
+                        if btn.get("id") == fid and btn.get("text"):
+                            s["find"] = {"text": btn["text"]}
+                            s["action"] = "click"
+                            s["optional"] = True
+                            s["when"] = {}
+                            self.log.info("[post-fix] Fixed button id->text: %s -> %s", fid, btn["text"])
+                            break
+
         # 3. For state machine, ensure select/random step exists
         if config.get("loop_until"):
             has_select = any(s.get("action") == "select" for s in config.get("steps", []))
@@ -679,6 +698,7 @@ when规则:
         diag = self._diagnose_page()
         snap = self._diagnose_snapshot()
         self._last_snapshot = snap.get("inputs", [])
+        self._last_buttons = snap.get("buttons", [])
         report_lines.append(f"### 当前页面诊断")
         report_lines.append(f"  URL: {diag['url']}")
         report_lines.append(f"  Title: {diag['title']}")
@@ -748,11 +768,28 @@ when规则:
             navigate_url: str = None) -> Tuple[dict, ValidationResult]:
         """Full generate → validate → fix loop. Returns (final_json, last_result)."""
 
+        # Capture first-page DOM before generating (helps LLM use real element text)
+        page_diag = ""
+        if navigate_url:
+            try:
+                self.cdp.eval(f"(function(){{window.location.href='{navigate_url}';}})()")
+                time.sleep(2)
+                diag = self._diagnose_page()
+                snap = self._diagnose_snapshot()
+                fields = json.dumps(snap.get("inputs", [])[:10], ensure_ascii=False)
+                buttons = json.dumps(snap.get("buttons", [])[:10], ensure_ascii=False)
+                page_diag = f"URL: {diag.get('url','')}\nTitle: {diag.get('title','')}\n可见输入框: {fields}\n可见按钮: {buttons}"
+                if diag.get('iframes'):
+                    page_diag += f"\niframe: {json.dumps(diag['iframes'], ensure_ascii=False)}"
+            except Exception:
+                pass
+
         self.log.info("=== Step 1: Generate ===")
-        config = self.generate(description)
+        config = self.generate(description, page_diag)
         self.log.info(f"Generated: {len(config.get('steps',[]))} steps")
 
-        for cycle in range(self.MAX_FIX_CYCLES + 1):
+        max_cycles = 1 if config.get("loop_until") else self.MAX_FIX_CYCLES
+        for cycle in range(max_cycles + 1):
             self.log.info(f"=== Step 2: Validate (cycle {cycle}) ===")
             result = self.validate(config, profile,
                                    navigate_url if cycle == 0 else None)
@@ -763,12 +800,12 @@ when规则:
                 self.log.info(f"  URL: {result.final_url[:80]}")
                 return config, result
 
-            if cycle < self.MAX_FIX_CYCLES:
+            if cycle < max_cycles:
                 self.log.info(f"=== Step 3: Fix (cycle {cycle}) ===")
                 config = self.fix(config, result)
                 config = self._post_fix(config, result)
             else:
-                self.log.warning(f"FAILED after {self.MAX_FIX_CYCLES} fix cycles")
+                self.log.warning(f"FAILED after {max_cycles} fix cycles")
                 self.log.warning(f"  Failed steps: {len(result.failed_steps)}")
 
         return config, result
