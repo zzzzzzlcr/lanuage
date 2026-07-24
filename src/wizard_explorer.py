@@ -145,7 +145,42 @@ class WizardExplorer:
     # ── LLM Decision ──────────────────────────────────────────────
 
     def _decide_action(self, state: dict, success_desc: str, round_n: int) -> dict:
-        """Pick ONE action based on current page state."""
+        """Ask LLM: given current page state + success goal, what's the ONE next action?"""
+        if not self.llm:
+            return self._fallback_decision(state)
+
+        btns = [b["text"] for b in state.get("buttons",[])
+                if b["text"] not in ("MockServer","Privacy Policy","Terms of Service","Contact","©")]
+        fields = [f.get("ph","") or f.get("id","") for f in state.get("fields",[]) if f.get("ph") or f.get("id")]
+        body = (state.get('body','') or '')[:200]
+
+        prompt = f"""当前页面: {state.get('heading','')}
+可见按钮: {btns}
+可见输入框: {fields}
+页面文字: {body}
+成功条件: {success_desc}
+已执行{len(self.trajectory)}步
+
+返回下一步动作(JSON):
+{{"action":"select"}} — 随机选一个选项
+{{"action":"click","find":{{"text":"按钮文字"}}}} — 点按钮(填完所有输入框后)
+{{"action":"form","field":{{"label":"输入框描述","type":"text|email|tel"}}}} — 填字段
+{{"action":"done"}} — 已成功
+只返回JSON"""
+
+        try:
+            response = self.llm.chat.completions.create(
+                model="deepseek-v4-pro",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0, max_tokens=150
+            )
+            content = response.choices[0].message.content.strip()
+            if content.startswith("```"): content = content.split("\n",1)[1].rsplit("```",1)[0]
+            return json.loads(content)
+        except:
+            return self._fallback_decision(state)
+
+    def _fallback_decision(self, state: dict) -> dict:
         btns = {b["text"]: b for b in state.get("buttons",[]) if b["text"] not in ("MockServer","Privacy Policy","Terms of Service","Contact","©")}
         fields = {f.get("id","") or f.get("ph",""): f for f in state.get("fields",[]) if f.get("ph") or f.get("id")}
         opts = state.get("options", [])
@@ -161,50 +196,31 @@ class WizardExplorer:
         if opts and len(self.trajectory) == 0 and not self.filled_fields:
             return {"action": "select", "selection_strategy": {"type": "random"}}
 
-        # 2. Fill ZIP/Postcode field (always first in wizards)
-        zip_keys = [k for k in fields if "zip" in k.lower() or "post" in k.lower()]
-        if zip_keys and zip_keys[0] not in self.filled_fields:
-            k = zip_keys[0]; f = fields[k]
-            self.filled_fields.add(k)
-            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "zip"}}
+        # 2. Fill ALL fields first (ZIP → Name → Phone → Email → other)
+        for pattern, ftype in [("zip", "zip"), ("post", "zip"), ("name", "text"), ("full", "text"),
+                                ("phone", "tel"), ("tel", "tel"), ("email", "email"), ("mail", "email"),
+                                ("area", "text")]:
+            keys = [k for k in fields if pattern in k.lower()]
+            if keys and keys[0] not in self.filled_fields:
+                k = keys[0]; f = fields[k]
+                self.filled_fields.add(k)
+                return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": ftype}}
 
-        # 3. Click "Get Estimate" / "Get Quote" / "Continue" / "Next"
-        for btn_text in ("Get Estimate","Get Quote","Continue","Next"):
-            if btn_text in btns:
-                return {"action": "click", "find": {"text": btn_text}}
-
-        # 4. Fill Name/Phone/Email fields (after wizard page transition)
-        name_keys = [k for k in fields if "name" in k.lower() or "full" in k.lower()]
-        if name_keys and name_keys[0] not in self.filled_fields:
-            k = name_keys[0]; f = fields[k]
-            self.filled_fields.add(k)
-            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "text"}}
-
-        phone_keys = [k for k in fields if "phone" in k.lower() or "tel" in k.lower()]
-        if phone_keys and phone_keys[0] not in self.filled_fields:
-            k = phone_keys[0]; f = fields[k]
-            self.filled_fields.add(k)
-            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "tel"}}
-
-        email_keys = [k for k in fields if "email" in k.lower() or "mail" in k.lower()]
-        if email_keys and email_keys[0] not in self.filled_fields:
-            k = email_keys[0]; f = fields[k]
-            self.filled_fields.add(k)
-            return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "email"}}
-
-        # 5. Fill remaining fields
+        # Fill any remaining unfilled visible fields
         unfilled = [k for k in fields if k not in self.filled_fields]
         if unfilled:
             k = unfilled[0]; f = fields[k]
             self.filled_fields.add(k)
             return {"action": "form", "field": {"label": f.get("ph") or k, "id": f.get("id") or k, "type": "text"}}
 
-        # 6. Click action buttons
-        for btn_text in ("Record Request","Submit","Get My Results","See the Full Breakdown","Get My Free Guide","UNLOCK HERE","Subscribe","Send Message"):
+        # 3. All fields filled → click the most appropriate button
+        for btn_text in ("Get Estimate","Get Quote","Record Request","Submit",
+                         "Get My Results","See the Full Breakdown","Get My Free Guide",
+                         "UNLOCK HERE","Subscribe","Send Message","Continue","Next"):
             if btn_text in btns:
                 return {"action": "click", "find": {"text": btn_text}}
 
-        # 7. Any button as last resort
+        # Any button as last resort
         if btns:
             first = list(btns.keys())[0]
             return {"action": "click", "find": {"text": first}}
@@ -290,7 +306,7 @@ class WizardExplorer:
         bs[i].click();return;}}}}}})()""")
 
     def _exec_form(self, field: dict):
-        """Fill a form field with appropriate test values."""
+        """Fill a form field with appropriate test values. Uses direct value set + events."""
         from locator import FieldLocator, LocatorError
         loc = FieldLocator(self.cdp)
         try:
@@ -304,7 +320,14 @@ class WizardExplorer:
             elif "area" in label: value = "1500"
             elif ftype == "number": value = "35"
             else: value = "John"
-            self.cdp.form(result.selector, value=value)
+            # Use direct value assignment + dispatch events (more reliable than cdp.form)
+            esc = result.selector.replace("'", "\\'")
+            self.cdp.eval(
+                "(function(){var e=document.querySelector('" + esc + "');"
+                "if(e){e.value='" + value + "';"
+                "e.dispatchEvent(new Event('input',{bubbles:true}));"
+                "e.dispatchEvent(new Event('change',{bubbles:true}));"
+                "e.dispatchEvent(new Event('blur',{bubbles:true}));}})()")
         except LocatorError as e:
             self.log.warning(f"[Explorer] Form locate failed: {e}")
 
