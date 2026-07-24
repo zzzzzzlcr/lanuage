@@ -141,42 +141,46 @@ class WizardExplorer:
     # ── LLM Decision ──────────────────────────────────────────────
 
     def _decide_action(self, state: dict, success_desc: str, round_n: int) -> dict:
-        """Ask LLM to pick ONE action based on current page state. Uses pro model for accuracy."""
-        if not self.llm:
-            return None
-
+        """Pick ONE action based on current page state. Code rules first, LLM as fallback."""
         btns = [b for b in state.get("buttons",[]) if b["text"] not in ("MockServer","Privacy Policy","Terms of Service","Contact","©")]
-        fields = state.get("fields", [])[:8]
-        opts = state.get("options", [])[:6]
+        fields = [f for f in state.get("fields",[]) if f.get("ph") or f.get("id")]
+        opts = state.get("options", [])
+        body = state.get("body","") or ""
+        btn_texts = [b["text"] for b in btns]
+        action_btns = [t for t in btn_texts if t in ("Get Estimate","Record Request","Continue","Next","Submit","Get My Results","See the Full Breakdown","Get My Free Guide","UNLOCK HERE","Subscribe","Send Message")]
 
-        prompt = f"""当前页面: {state.get('heading','')}
-可见按钮: {json.dumps([b['text'] for b in btns], ensure_ascii=False)}
-输入框: {json.dumps([{f.get('ph') or f.get('id','?') for f in fields}], ensure_ascii=False)}
-选项: {json.dumps(opts, ensure_ascii=False)}
-页面文字: {(state.get('body','') or '')[:200]}
+        # Rule 1: options visible + no trajectory → select random
+        if opts and len(self.trajectory) == 0:
+            return {"action": "select", "selection_strategy": {"type": "random"}}
 
-返回JSON选择下一步: {{"action":"select|click|form|done"}}
-select → 随机点选项: {{"action":"select","selection_strategy":{{"type":"random"}}}}
-click → 点按钮: {{"action":"click","find":{{"text":"按钮上的文字"}}}}
-form → 填字段: {{"action":"form","field":{{"label":"描述","type":"text"}},"value":"填的值"}}
-done → 已成功: {{"action":"done"}}
-只返回JSON"""
+        # Rule 2: visible form fields → fill them (one at a time)
+        if fields:
+            f = fields[0]
+            label = f.get("ph") or f.get("id") or "name"
+            fid = f.get("id", "")
+            ftype = "text"
+            if "email" in label.lower() or "email" in fid.lower(): ftype = "email"
+            elif "zip" in label.lower() or "zip" in fid.lower() or "post" in label.lower(): ftype = "zip"
+            elif "phone" in label.lower() or "phone" in fid.lower() or "tel" in fid.lower(): ftype = "tel"
+            elif "password" in label.lower() or "pw" in fid.lower(): ftype = "password"
+            elif "area" in label.lower(): ftype = "area"
+            state["fields"] = fields[1:]
+            return {"action": "form", "field": {"label": label, "id": fid, "type": ftype}}
 
-        try:
-            response = self.llm.chat.completions.create(
-                model="deepseek-v4-pro",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0, max_tokens=200
-            )
-            content = response.choices[0].message.content.strip()
-            if content.startswith("```"): content = content.split("\n", 1)[1].rsplit("```", 1)[0]
-            content = content.strip().rstrip(",")
-            action = json.loads(content)
-            self.log.info(f"[Explorer] LLM chose: {json.dumps(action)}")
-            return action
-        except Exception as e:
-            self.log.error(f"[Explorer] LLM failed: {e}, raw={content[:100] if 'content' in dir() else 'N/A'}")
-            return None
+        # Rule 3: action buttons → click the most relevant one
+        if action_btns:
+            return {"action": "click", "find": {"text": action_btns[0]}}
+
+        # Rule 4: any visible button → click it
+        if btns:
+            return {"action": "click", "find": {"text": btns[0]["text"]}}
+
+        # Rule 5: success check → done
+        if "Estimate" in body or "Ready" in body or "Thank" in body or "Complete" in body:
+            return {"action": "done"}
+
+        # Rule 6: nothing else to do
+        return {"action": "done"}
 
     # ── Execute & Verify ──────────────────────────────────────────
 
@@ -212,25 +216,40 @@ done → 已成功: {{"action":"done"}}
 
         # Capture new state
         new_state = self._capture_state()
-        # Verify transition: did something change?
-        changed = (new_state["fingerprint"] != old_state["fingerprint"]
-                   or new_state.get("url") != old_state.get("url"))
+        # Verify transition: data entry steps (select/form) don't require page change
+        is_navigation = atype in ("click",)
+        if is_navigation:
+            changed = (new_state["fingerprint"] != old_state["fingerprint"]
+                       or new_state.get("url") != old_state.get("url"))
+        else:
+            changed = True  # select/form always considered successful
         return changed, new_state
 
     def _exec_select(self):
-        """Randomly click a visible option."""
-        skip = ["About","Terms","Privacy","Cookie","Contact","Manage","Policy","Disclaimer","View","Submit","Next","Check","Back","Close","Ok"]
-        js = f"""var skip={json.dumps(skip)};var opts=[];
-        var els=document.querySelectorAll('button,a,label,div');
-        for(var i=0;i<els.length;i++){{
-        var e=els[i],t=e.textContent.trim();
-        if(!e.offsetWidth||t.length<2||t.length>70)continue;
-        if(e.querySelector('div'))continue;
-        if(e.closest('nav,header,footer'))continue;
-        var bad=false;for(var s=0;s<skip.length;s++){{if(t.indexOf(skip[s])!==-1){{bad=true;break;}}}}
-        if(!bad)opts.push(e);}}
-        if(opts.length>0)opts[Math.floor(Math.random()*opts.length)].click();"""
-        self.cdp.eval(f"(function(){{{js}}})()")
+        """Click a visible option: prefer radio labels, then quiz options."""
+        # First try radio/checkbox labels (they toggle form controls)
+        js = """(function(){
+        var labels=document.querySelectorAll('label');
+        var opts=[];
+        for(var i=0;i<labels.length;i++){
+        var l=labels[i];var t=l.textContent.trim();
+        if(l.offsetWidth>0&&t.length>1&&t.length<60&&!l.querySelector('a')){
+        opts.push(l);
+        }}
+        if(opts.length>0){opts[Math.floor(Math.random()*opts.length)].click();return'radio';}
+        // Fallback: quiz option divs
+        var divs=document.querySelectorAll('div');
+        for(var i=0;i<divs.length;i++){
+        var d=divs[i];var t=d.textContent.trim();
+        if(!d.offsetWidth||t.length<2||t.length>70)continue;
+        if(d.querySelector('div'))continue;
+        if(d.closest('nav,header,footer'))continue;
+        opts.push(d);
+        }
+        if(opts.length>0){opts[Math.floor(Math.random()*opts.length)].click();return'div';}
+        return'none';
+        })()"""
+        self.cdp.eval(js)
 
     def _exec_click(self, text: str):
         """Click a button by visible text."""
@@ -242,16 +261,19 @@ done → 已成功: {{"action":"done"}}
         bs[i].click();return;}}}}}})()""")
 
     def _exec_form(self, field: dict):
-        """Fill a form field."""
+        """Fill a form field with appropriate test values."""
         from locator import FieldLocator, LocatorError
         loc = FieldLocator(self.cdp)
         try:
             result = loc.locate(field)
-            value = field.get("value", "test@test.com")
+            label = (field.get("label") or "").lower()
+            fid = (field.get("id") or "").lower()
             ftype = field.get("type", "text")
-            if ftype == "email": value = "test@test.com"
-            elif ftype == "tel": value = "1234567890"
-            elif ftype == "number": value = "12345"
+            if ftype == "email" or "email" in label or "email" in fid: value = "test@test.com"
+            elif ftype == "zip" or "zip" in label or "zip" in fid: value = "90210"
+            elif ftype == "tel" or "phone" in label or "phone" in fid: value = "1234567890"
+            elif "area" in label: value = "1500"
+            elif ftype == "number": value = "35"
             else: value = "John"
             self.cdp.form(result.selector, value=value)
         except LocatorError as e:
