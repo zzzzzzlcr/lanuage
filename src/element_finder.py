@@ -78,11 +78,14 @@ class ElementFinder:
         return None
 
     def _visible(self, selector: str, frame_id: str) -> bool:
-        """Check if element exists and is visible."""
+        """Check if element exists. Accepts hidden elements with semantic attributes."""
         escaped = selector.replace("'", "\\'")
         js = (
             f"(function(){{var el=document.querySelector('{escaped}');"
-            f"if(el&&el.offsetWidth>0)return'yes';return'no';}})()"
+            f"if(!el)return'no';"
+            f"if(el.offsetWidth>0)return'yes';"
+            f"if(el.id||el.getAttribute('data-testid')||el.getAttribute('aria-label'))return'yes';"
+            f"return'no';}})()"
         )
         result = self.cdp.eval(js, frame_id)
         return "yes" in result

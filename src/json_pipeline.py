@@ -475,6 +475,14 @@ when规则:
                     s["id"] = "step_" + (s.get("field", {}).get("label") or s.get("field", {}).get("type") or "form")
                     self.log.info("[post-fix] Added id=%s to state machine step", s["id"])
 
+        # 2c. For state machine: ensure click/eval steps have when:{}+optional (retry each round)
+        if config.get("loop_until"):
+            for s in config.get("steps", []):
+                if s.get("action") in ("click", "eval") and "when" not in s:
+                    s["when"] = {}
+                    s["optional"] = True
+                    self.log.info("[post-fix] Added when:{}+optional to state machine click step")
+
         # 3. For state machine, ensure select/random step exists
         if config.get("loop_until"):
             has_select = any(s.get("action") == "select" for s in config.get("steps", []))
