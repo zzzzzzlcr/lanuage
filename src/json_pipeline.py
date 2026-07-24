@@ -469,6 +469,8 @@ when规则:
 - 元素找不到: 看Snapshot DOM分析里的真实元素
   * snap里有id/name→用精确id或name; 只有class没id/name→用selector; 完全没有→可能动态加载,加wait
   * 不要自己编造id/name, 用snapshot里的真实数据
+- **重要: 只修复失败的步骤，不要删除或修改成功的步骤**
+- **如果有select/quiz步骤在原始JSON中，必须保留，不能删除**
 - 超时: 增加wait时间
 - 点错按钮: 换更精确的text匹配(加tag过滤)
 - 页面还没加载: 在前面加wait步骤

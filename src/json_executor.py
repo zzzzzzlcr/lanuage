@@ -213,7 +213,14 @@ class JSONExecutor:
 
                 loc = self.locator.locate(field, frame_hint=frame_hint)
                 ok = bool(loc and loc.selector)
-                self.log.info(f"[JSON] field_exists {field.get('label','?')}: {ok} sel={loc.selector if ok else 'NONE'}")
+                if ok:
+                    esc = loc.selector.replace("'", "\\'")
+                    vis = self.cdp.eval(
+                        "(function(){var e=document.querySelector('" + esc + "');"
+                        "return e&&e.offsetWidth>0?'yes':'no';})()", self._frame_id)
+                    ok = 'yes' in str(vis)
+                self.log.info("[JSON] field_exists %s: exist=%s vis=%s",
+                    field.get('label','?'), bool(loc and loc.selector), 'yes' if ok else 'no')
                 return ok
             except LocatorError as e:
                 self.log.info(f"[JSON] field_exists {field.get('label','?')}: LocatorError {e}")
