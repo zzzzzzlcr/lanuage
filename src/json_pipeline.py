@@ -122,8 +122,18 @@ class JSONPipeline:
   {"when":{},"action":"eval","script":"...Next...","optional":true}
 
 when规则:
-- field_exists: 字段在当前页时才执行 (填表步骤必须用)
+- field_exists: 字段在当前页**可见**时才执行 (填表步骤必须用)
+  * 必须指定 type (email/tel/text) 或 id，不能只用 label
+  * 系统会检查字段是否真实可见（offsetWidth>0），隐藏的表单字段不会触发
 - {}: 总是尝试 (quiz选项、导航按钮)
+- **quiz页标准模板（关键！）**:
+  {"site":"...","loop_until":{"any":[{"body_contains":["成功文字"]}]},"max_rounds":20,"steps":[
+    {"when":{},"action":"select","selection_strategy":{"type":"random"}},
+    {"id":"fill","when":{"field_exists":{"id":"email-input","type":"email"}},"action":"form","field":{"id":"email-input","type":"email"},"value":"{{random.email}}"},
+    {"when":{},"action":"click","find":{"text":"Submit"},"optional":true}
+  ]}
+  第一行select是quiz选项（每轮执行），后面是表单字段（visible才执行）
+- loop_until 必须用 {"any":[{"body_contains":["文字"]}]} 格式，不能只用 {"body_contains":"文字"}
 - 可选步骤加 "optional":true (只有运营写了"(可选)"才加！填表步骤不要加optional)
 
 ### 7. 线性模式 (运营用编号1.2.3.格式)
@@ -423,6 +433,50 @@ when规则:
         self.cdp.form(selector, value=value, select=select)
         return True
 
+    def _post_fix(self, config: dict, result=None) -> dict:
+        """Code-based post-processing after LLM fix. Fix common LLM mistakes."""
+        # 1. Ensure loop_until has 'any' wrapper
+        lu = config.get("loop_until")
+        if lu and "any" not in lu:
+            config["loop_until"] = {"any": [lu]}
+            self.log.info("[post-fix] Wrapped loop_until in {any: [...]}")
+
+        # 2. Fix field_exists: add semantic hints (placeholder/label) from page snapshot
+        snap_inputs = []
+        if result and hasattr(self, '_last_snapshot'):
+            snap_inputs = self._last_snapshot
+        for s in config.get("steps", []):
+            fe = (s.get("when", {}) or {}).get("field_exists")
+            if fe and not fe.get("id") and not fe.get("label") and not fe.get("placeholder"):
+                ftype = fe.get("type", "") or s.get("field", {}).get("type", "")
+                # Find semantic hints from page elements matching this type
+                for inp in snap_inputs:
+                    ph = inp.get("placeholder", "").lower()
+                    iid = inp.get("id", "").lower()
+                    aria = inp.get("aria", "").lower()
+                    if ftype == "email" and ("email" in ph or "email" in iid):
+                        fe["placeholder"] = inp.get("placeholder", "")
+                        break
+                    if ftype == "tel" and ("phone" in ph or "tel" in iid or "phone" in iid):
+                        fe["placeholder"] = inp.get("placeholder", "")
+                        break
+                # Also fix the form field similarly
+                if fe.get("placeholder") and s.get("field") and not s["field"].get("id") and not s["field"].get("label"):
+                    s["field"]["placeholder"] = fe["placeholder"]
+                    self.log.info(f\"[post-fix] Added placeholder={fe['placeholder']} from snapshot\")
+
+        # 3. For state machine, ensure select/random step exists
+        if config.get("loop_until"):
+            has_select = any(s.get("action") == "select" for s in config.get("steps", []))
+            if not has_select:
+                config.setdefault("steps", []).insert(0, {
+                    "when": {}, "action": "select",
+                    "selection_strategy": {"type": "random"}
+                })
+                self.log.info("[post-fix] Added missing select/random step")
+
+        return config
+
     def _check_success_static(self, succ: dict, url: str, body: str) -> bool:
         """Check success conditions without executor (static version)."""
         if not succ:
@@ -471,6 +525,11 @@ when规则:
   * 不要自己编造id/name, 用snapshot里的真实数据
 - **重要: 只修复失败的步骤，不要删除或修改成功的步骤**
 - **如果有select/quiz步骤在原始JSON中，必须保留，不能删除**
+- **状态机模式(loop_until)修复规则**:
+  * 不要将状态机改写成线性模式，保留 loop_until + when 结构
+  * 如果 field_exists 找不到字段，改用 id 定位：{"field_exists":{"id":"实际id","type":"类型"}}
+  * quiz选项步骤用 when:{} 表示每轮都执行
+  * loop_until 必须用 {"any":[{"body_contains":["文字"]}]} 格式
 - 超时: 增加wait时间
 - 点错按钮: 换更精确的text匹配(加tag过滤)
 - 页面还没加载: 在前面加wait步骤
@@ -601,6 +660,7 @@ when规则:
         # Always attach diagnostic: what elements ARE available on the page
         diag = self._diagnose_page()
         snap = self._diagnose_snapshot()
+        self._last_snapshot = snap.get("inputs", [])
         report_lines.append(f"### 当前页面诊断")
         report_lines.append(f"  URL: {diag['url']}")
         report_lines.append(f"  Title: {diag['title']}")
@@ -688,6 +748,7 @@ when规则:
             if cycle < self.MAX_FIX_CYCLES:
                 self.log.info(f"=== Step 3: Fix (cycle {cycle}) ===")
                 config = self.fix(config, result)
+                config = self._post_fix(config, result)
             else:
                 self.log.warning(f"FAILED after {self.MAX_FIX_CYCLES} fix cycles")
                 self.log.warning(f"  Failed steps: {len(result.failed_steps)}")

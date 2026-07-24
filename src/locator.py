@@ -300,11 +300,25 @@ class FieldLocator:
             f"return c;}})()"
         )
         raw = self.cdp.eval(js, frame_id)
-        try: count = int(raw.strip().strip('"'))
+        try: count = int(raw) if isinstance(raw, (int, float)) else int(raw.strip().strip('"'))
         except: count = 0
 
         if count == 0:
-            return []
+            # Fallback: search by id or placeholder containing the type name
+            fallback_sel = f'input[id*="{ftype}"],input[placeholder*="{ftype}"]'
+            js2 = (
+                f"(function(){{var els=document.querySelectorAll('{fallback_sel}');var c=0;"
+                f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0||els[i].placeholder||els[i].name||els[i].id)c++;}}"
+                f"return c;}})()"
+            )
+            raw2 = self.cdp.eval(js2, frame_id)
+            try: count = int(raw2) if isinstance(raw2, (int, float)) else int(raw2.strip().strip('"'))
+            except: count = 0
+            if count == 0:
+                return []
+            # Use the fallback selector for the rest
+            selector = fallback_sel
+            return [{'selector': selector, 'strategy': 'type_match_fallback', 'confidence': 0.75}]
         if count == 1:
             return [{'selector': selector, 'strategy': 'type_match', 'confidence': 0.8}]
 
@@ -318,7 +332,7 @@ class FieldLocator:
             f"return n;}})()"
         )
         raw = self.cdp.eval(js_mark, frame_id)
-        try: actual_count = int(raw.strip().strip('"'))
+        try: actual_count = int(raw) if isinstance(raw, (int, float)) else int(raw.strip().strip('"'))
         except: actual_count = count
 
         results = []
