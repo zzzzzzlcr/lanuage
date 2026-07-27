@@ -6,6 +6,71 @@
 
 ---
 
+## 全部站点速查
+
+| # | 访问地址 | 站点说明 | 类型 |
+|---|---------|---------|------|
+| | **基础表单** | | |
+| 1 | `http://192.168.1.51:8080/nexaralai/contact` | 标准联系表单（Name+Email+Select+Textarea） | contact_form |
+| 2 | `http://192.168.1.51:8080/no-label-form` | 无 label 表单（只有 placeholder+aria-label） | newsletter |
+| 3 | `http://192.168.1.51:8080/nested-buttons` | 嵌套按钮（button>span>span） | general |
+| 4 | `http://192.168.1.51:8080/renttoown` | GHL 表单（data-q + 蜜罐字段） | home_improvement |
+| | **下拉框 & 选择器** | | |
+| 5 | `http://192.168.1.51:8080/mui-select` | MUI Select（div[role=combobox]） | general |
+| 6 | `http://192.168.1.51:8080/react-select` | React Select（css-select__control + multi） | general |
+| 7 | `http://192.168.1.51:8080/ant-design` | Ant Design（ant-select-dropdown） | general |
+| 8 | `http://192.168.1.51:8080/dob-select` | 生日三下拉框（月/日/年 select） | general |
+| | **Radio 单选** | | |
+| 9 | `http://192.168.1.51:8080/radio-group` | 4种 Radio 模式（原生/MUI/div伪/图片卡） | general |
+| 10 | `http://192.168.1.51:8080/healthwindow` | Radio + DOB + 邮编 | health_insurance |
+| 11 | `http://192.168.1.51:8080/ctm` | 保险多页（radio→checkbox→input） | health_insurance |
+| | **Checkbox 勾选** | | |
+| 12 | `http://192.168.1.51:8080/mui-checkbox` | MUI Toggle Switch（隐藏input+label在后） | general |
+| | **多步 SPA / Wizard** | | |
+| 13 | `http://192.168.1.51:8080/spa-steps` | SPA 三步（ZIP→Name→Email，异步切换） | newsletter |
+| 14 | `http://192.168.1.51:8080/solarforall` | 太阳能 Wizard（省份→电费→联系信息） | home_improvement |
+| 15 | `http://192.168.1.51:8080/removemenow/freescan` | 隐私扫描（fname+lname+email+age+zip） | newsletter |
+| 16 | `http://192.168.1.51:8080/seniorbath/form` | Walk-in Tub（ZIP→Name→Terms） | home_improvement |
+| | **Quiz 答题** | | |
+| 17 | `http://192.168.1.51:8080/survey-form` | SurveyJS 风格（5题：radio/checkbox/textarea/rating/email） | survey |
+| 18 | `http://192.168.1.51:8080/tabca` | 车辆融资 Quiz（2题 icon 按钮） | quiz |
+| 19 | `http://192.168.1.51:8080/geminihealth` | 敏感度 Quiz（5题 funnel） | quiz |
+| | **Slider 滑块** | | |
+| 20 | `http://192.168.1.51:8080/range-slider` | Range 滑块（dispatchEvent） | general |
+| | **MUI TextField** | | |
+| 21 | `http://192.168.1.51:8080/mui-textfield` | MUI TextField ×4（label无for，_r_1_动态id） | general |
+| | **组件库专项** | | |
+| 22 | `http://192.168.1.51:8080/chakra-form` | Chakra UI（data-invalid, chakra-form__error） | general |
+| 23 | `http://192.168.1.51:8080/shadcn-form` | shadcn/ui（data-slot=form-item, text-destructive） | general |
+| 24 | `http://192.168.1.51:8080/modform` | Emotion CSS-in-JS（slotswise 1:1复刻） | general |
+| | **iframe 嵌套** | | |
+| 25 | `http://192.168.1.51:8080/` | entyrecare iframe 13步表单 | health_insurance |
+| 26 | `http://192.168.1.51:8080/irspenalty` | IRS Penalty iframe 表单 | general |
+| | **复杂综合** | | |
+| 27 | `http://192.168.1.51:8080/ace` | 赌场注册（弹窗+exit popup） | casino |
+| 28 | `http://192.168.1.51:8080/spree` | 年龄门+modal弹窗 | casino |
+| 29 | `http://192.168.1.51:8080/livebeam` | DOM wizard（全部在同一页） | dating |
+| 30 | `http://192.168.1.51:8080/datewhirl` | SPA quiz + 动态标签 | dating |
+| 31 | `http://192.168.1.51:8080/tello` | 多页面跳转（5页注册） | general |
+| 32 | `http://192.168.1.51:8080/reactapp` | React hash DOM（CSS Modules + data-field） | general |
+| 33 | `http://192.168.1.51:8080/carwarranty` | 车辆保修（select 年/品牌/型号） | general |
+| 34 | `http://192.168.1.51:8080/fishinvest` | 投资问卷（生日+密码） | general |
+| 35 | `http://192.168.1.51:8080/mortgagequiz` | 房贷 Quiz（房价滑块） | general |
+| 36 | `http://192.168.1.51:8080/garagefloor` | 家装 Quiz（楼梯数+ZIP） | home_improvement |
+| 37 | `http://192.168.1.51:8080/gravityform` | WordPress GF 表单 | general |
+| 38 | `http://192.168.1.51:8080/showerlead` | 家装 SMS opt-in | home_improvement |
+| 39 | `http://192.168.1.51:8080/casinospin` | 幸运转盘（spin→signup→success） | casino |
+| 40 | `http://192.168.1.51:8080/tarotcard` | 塔罗牌选卡 funnel | general |
+| 41 | `http://192.168.1.51:8080/lilacworks` | 两步 select 表单 | general |
+| 42 | `http://192.168.1.51:8080/freedomdebt` | 债务减免（SSN+spinner） | general |
+| 43 | `http://192.168.1.51:8080/protectsav` | popup 表单 + name=* 选择器 | general |
+| 44 | `http://192.168.1.51:8080/nexaralai` | Nexaral AI 首页 | landing |
+| 45 | `http://192.168.1.51:8080/removemenow` | RemoveMe 首页+FAQ | landing |
+| 46 | `http://192.168.1.51:8080/compareinsulation` | 隔热评估入口页 | landing |
+| 47 | `http://192.168.1.51:8080/connecthearing` | 听力评估入口页 | landing |
+
+---
+
 ## 一、基础表单类
 
 ### 1.1 标准联系表单（nexaralai）
