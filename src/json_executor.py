@@ -454,9 +454,46 @@ class JSONExecutor:
         stype = strategy.get("type", "random")
         skip_words = ['About','Terms','Privacy','Cookie','Sign In','Contact',
                       'Arbitration','Manage','Policy','Disclaimer',
-                      'Get','View','Submit','Continue','Next','See','Go','Check']
+                      'Get','View','Submit','Continue','Next','See','Go','Check',
+                      'Previous','Back','Skip','Reset','Clear All']
 
         if stype == "random":
+            # Auto-detect quiz scope: search for active question container with radio/checkbox
+            container = step.get("container", "")
+            if not container:
+                detect_js = (
+                    "(function(){var old=document.querySelector('[data-quiz-scope]');if(old)old.removeAttribute('data-quiz-scope');"
+                    "var q=document.querySelector('.sv-question.active,fieldset:not([disabled]),[role=radiogroup],[role=group]');"
+                    "if(!q)return'none';"
+                    "var ctls=q.querySelectorAll('input[type=checkbox],input[type=radio],[role=checkbox],[role=radio]');"
+                    "if(!ctls.length)return'none';"
+                    "var t=(q.textContent||'').toLowerCase();"
+                    "if(/agree|terms|privacy|consent|subscribe|marketing|policy/.test(t))return'consent';"
+                    "q.setAttribute('data-quiz-scope','1');return'scope';})()"
+                )
+                r = self.cdp.eval(detect_js, self._frame_id)
+                if "scope" in str(r):
+                    container = '[data-quiz-scope="1"]'
+
+            if container:
+                # Scoped label search for quiz options
+                scope_expr = f"document.querySelector('{container}')"
+                js = (
+                    f"(function(){{var scope={scope_expr};if(!scope)return'no-scope';"
+                    f"var labels=Array.from(scope.querySelectorAll('label')).filter(function(l){{"
+                    f"var inp=l.querySelector('input[type=checkbox],input[type=radio]');"
+                    f"return inp&&!inp.disabled&&l.offsetWidth>0;}});"
+                    f"if(!labels.length)return'none';"
+                    f"var label=labels[Math.floor(Math.random()*labels.length)];"
+                    f"label.setAttribute('data-sel','1');return'picked';}})()"
+                )
+                result = self.cdp.eval(js, self._frame_id)
+                if "picked" in str(result):
+                    self.cdp.click('[data-sel=\"1\"]', self._frame_id)
+                    time.sleep(0.2)
+                    self.log.info(f"[JSON] quiz auto-scope select: {str(result).strip()}")
+                    return True
+
             # control_types mode: scoped search within quiz container
             ctl_types = step.get("control_types", [])
             if ctl_types:
@@ -851,9 +888,12 @@ class JSONExecutor:
             else:
                 result = _json.loads(raw)
                 if isinstance(result, str): result = _json.loads(result)
-        except Exception:
+        except Exception as e:
+            self.log.info(f"[JSON] quiz detect error: {e} raw={str(raw)[:80]}")
             return False
-        if not result.get("matched"): return False
+        if not result.get("matched"):
+            self.log.info(f"[JSON] quiz detect: no match, result={result}")
+            return False
         self.log.info(f"[JSON] quiz-group: {result.get('count')} {result.get('type')} controls")
         return self._select_option({"container":'[data-quiz-scope="1"]',"control_types":["checkbox","radio"],"selection_strategy":{"type":"random"}})
 
