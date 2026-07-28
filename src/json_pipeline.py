@@ -201,36 +201,11 @@ when规则:
         steps = config.get('steps', [])
         result.total_steps = len(steps)
 
-        # Create executor with step-level tracking
-        for i, step in enumerate(steps):
-            result.success_steps = i  # steps so far
-            step_result = self._run_one_step(i, step, config, profile)
-
-            if not step_result.success:
-                result.failed_steps.append(step_result)
-
-            # Check if success triggered early
-            info = self.cdp.get_page_info()
-            # Poll for success: some pages show success text with delay (setTimeout, animation)
-            succ_config = config.get('success', {})
-            for _ in range(4):  # poll 4 times with 0.5s intervals
-                info = self.cdp.get_page_info()
-                url = info.get('url', '')
-                body = self.cdp.eval(
-                    "(function(){return document.body?document.body.innerText.substring(0,2000):'';})()")
-                if self._check_success_static(succ_config, url, body):
-                    result.success_triggered = True
-                    result.success_steps = i + 1
-                    result.passed = True
-                    result.final_url = url
-                    result.final_body = body
-                    return result
-                time.sleep(0.5)
-
-        result.success_steps = len(steps)
-        # Success = the success conditions actually triggered, not just all steps ran
-        # (Will be set below if success detection matches)
-
+        # Delegate to JSONExecutor — single execution path for both direct and pipeline
+        executor = JSONExecutor(config, profile, self.cdp, log=self.log)
+        ok = executor.run()
+        result.success_steps = executor._steps_run
+        result.passed = ok
         # Capture final state
         info = self.cdp.get_page_info()
         result.final_url = info.get('url', '')
@@ -246,13 +221,36 @@ when规则:
         return result
 
     def _run_one_step(self, i: int, step: dict, config: dict, profile: dict) -> StepResult:
-        """Execute a single step and return its result."""
+        """Execute a single step and return its result.
+        Delegates form/click/select to JSONExecutor for unified execution."""
         from element_finder import ElementFinder
         from variable_resolver import VariableResolver
 
         var = VariableResolver(profile, self.log)
         finder = ElementFinder(self.cdp, self.log)
         step = var.resolve_dict(step)
+
+        action = step.get('action', '')
+        # Delegate form/click/select to unified executor
+        if action in ('form', 'click', 'select'):
+            if not hasattr(self, '_executor'):
+                self._executor = JSONExecutor.__new__(JSONExecutor)
+                self._executor.config = config
+                self._executor.profile = profile
+                self._executor.cdp = self.cdp
+                self._executor.log = self.log
+                self._executor.var = var
+                self._executor.finder = finder
+                from locator import FieldLocator
+                self._executor.locator = FieldLocator(self.cdp, log=self.log)
+                self._executor._steps_run = 0
+                self._executor._frame_id = ""
+            ok = self._executor._execute_step(step)
+            sr = StepResult(index=i, action=action, find_spec=step.get('find', {}))
+            sr.success = ok
+            if not ok:
+                sr.error = f"Step {i} failed: {step}"
+            return sr
 
         sr = StepResult(
             index=i,
