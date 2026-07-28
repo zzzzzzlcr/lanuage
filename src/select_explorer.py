@@ -102,7 +102,9 @@ def find_single_safe_trigger(marker_sel: str, cdp, frame_id: str = "") -> str | 
         f"(function(){{var a=document.querySelector('{esc}');if(!a)return'none';"
         f"var area=a.closest('[class*=form-item],fieldset,div');"
         f"if(!area)area=a.parentElement;"
-        f"var triggers=area.querySelectorAll('select,[role=combobox],[aria-haspopup=listbox],"
+        # Also check area itself + parent for trigger (anchor may be hidden input inside container)
+        f"var searchRoot=area.parentElement||area;"
+        f"var triggers=searchRoot.querySelectorAll('select,[role=combobox],[aria-haspopup=listbox],"
         f"[tabindex]:not([tabindex=\"-1\"]),[onclick],button');"
         f"var best=null;var bestScore=0;"
         f"for(var i=0;i<triggers.length;i++){{"
