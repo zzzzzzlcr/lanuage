@@ -811,6 +811,26 @@ class JSONExecutor:
                     value = step.get("value")
                     check = step.get("check")
                     select = step.get("select")
+                    # Phase 1: Route dropdown intent to SelectExplorer
+                    if select and not value and not check:
+                        classification = self._classify_select_intent(step, selector)
+                        if classification == "DROPDOWN":
+                            from select_explorer import SelectExplorer, SelectIntent, CandidateRef
+                            if not hasattr(self, '_select_explorer'):
+                                self._select_explorer = SelectExplorer(self.cdp, self.log)
+                            candidates = self._normalize_explorer_candidates(loc)
+                            intent = SelectIntent(
+                                label=field.get("label", ""),
+                                mode="random" if select == "__random__" else "exact",
+                                option=None if select == "__random__" else select,
+                            )
+                            outcome = self._select_explorer.execute(intent, candidates)
+                            self.log.info(f"[JSON] explorer: {outcome.status}")
+                            if outcome.ok:
+                                return True
+                            if outcome.status in ("NOT_VERIFIED", "OPTION_NOT_FOUND",
+                                                   "OPEN_FAILED", "NO_SAFE_TRIGGER"):
+                                return False  # fail closed
                     # Quiz-group detection: __random__ on text anchor near radio/checkbox
                     if select == "__random__" and not value and not check:
                         if self._try_quiz_group(selector, self._frame_id):
@@ -871,6 +891,53 @@ class JSONExecutor:
                 return False
 
         return False
+
+    def _classify_select_intent(self, step: dict, selector: str) -> str:
+        """Classify form+select intent: DROPDOWN | CHOICE_GROUP | UNKNOWN."""
+        if step.get("action") != "form" or "select" not in step:
+            return "NOT_APPLICABLE"
+        esc = selector.replace("'", "\\'")
+        js = (
+            f"(function(){{var a=document.querySelector('{esc}');if(!a)return'{{}}';"
+            f"var area=a.closest('[class*=form-item],fieldset,div');"
+            f"if(!area)area=a.parentElement;"
+            f"var radios=area.querySelectorAll('input[type=radio],input[type=checkbox]');"
+            f"var vis=0;for(var i=0;i<radios.length;i++){{if(radios[i].offsetWidth>0)vis++;}}"
+            f"var sel=area.querySelector('select');"
+            f"var cb=area.querySelector('[role=combobox]');"
+            f"return JSON.stringify({{has_native_select:!!sel,has_aria_combobox:!!cb,"
+            f"has_visible_choice_group:vis>=2,has_single_trigger:!vis||vis<2}});}})()"
+        )
+        raw = self.cdp.eval(js)
+        try:
+            probe = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            probe = {}
+        if probe.get("has_native_select") or probe.get("has_aria_combobox"):
+            return "DROPDOWN"
+        if probe.get("has_visible_choice_group"):
+            return "CHOICE_GROUP"
+        if probe.get("has_single_trigger"):
+            return "DROPDOWN"
+        return "UNKNOWN"
+
+    def _normalize_explorer_candidates(self, loc) -> list:
+        """Convert LocatorResult to list of CandidateRef for SelectExplorer."""
+        from select_explorer import CandidateRef
+        refs = [CandidateRef(
+            selector=loc.selector,
+            frame_id=loc.frame_id,
+            source=loc.strategy,
+            confidence=loc.confidence
+        )]
+        for alt in (loc.alternatives or []):
+            refs.append(CandidateRef(
+                selector=alt.selector,
+                frame_id=alt.frame_id or loc.frame_id,
+                source=alt.strategy,
+                confidence=alt.confidence
+            ))
+        return refs
 
     def _detect_quiz_scope(self, selector: str, frame_id: str = "") -> str | None:
         """Detect if selector is a text anchor near radio/checkbox quiz options.
