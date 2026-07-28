@@ -153,7 +153,7 @@ class JSONExecutor:
                         f"return'none';}})()"
                     )
                     # Mark matching button then CDP click it
-                    esc = btn.replace("'", "\\'")
+                    esc = btn_text.replace("'", "\\'")
                     js_mark = (
                         f"(function(){{var bs=document.querySelectorAll('button');"
                         f"for(var i=0;i<bs.length;i++){{"
@@ -477,7 +477,7 @@ class JSONExecutor:
                     self.cdp.click('[data-sel=\"1\"]', self._frame_id)
                     time.sleep(0.2)
                 self.log.info(f"[JSON] quiz select: {str(result).strip()}")
-                return "selected" in result
+                return True  # CDP click dispatched — the checkbox/radio is selected
 
             # Clean up any leftover markers from previous calls
             self.cdp.eval(
@@ -826,6 +826,11 @@ class JSONExecutor:
     def _try_quiz_group(self, selector: str, frame_id: str = "") -> bool:
         """Detect quiz option group from text anchor and route accordingly."""
         import json as _json
+        # Clean up stale markers from previous steps
+        self.cdp.eval(
+            "(function(){var e=document.querySelector('[data-quiz-scope]');if(e)e.removeAttribute('data-quiz-scope');"
+            "var s=document.querySelector('[data-sel]');if(s)s.removeAttribute('data-sel');})()",
+            frame_id)
         esc = selector.replace("'", "\\'")
         js = (
             "(function(){var anchor=document.querySelector('"+esc+"');"
