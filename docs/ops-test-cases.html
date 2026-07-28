@@ -1,0 +1,737 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>运营测试用例</title><style>body{font:14px/1.6 system-ui,sans-serif;max-width:900px;margin:0 auto;padding:20px;background:#fff;color:#222}pre{background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:8px;overflow-x:auto}pre code{background:transparent;color:inherit;padding:0;font-size:13px}code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:13px}table{border-collapse:collapse;width:100%;margin:12px 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f5f5f5}h2{border-bottom:2px solid #eee;padding-bottom:6px;margin-top:24px}h3{margin-top:18px}hr{border:none;border-top:1px solid #eee;margin:20px 0}a{color:#2563eb}blockquote{border-left:3px solid #2563eb;padding:8px 16px;margin:12px 0;background:#f8faff;color:#555}</style></head><body><h1>运营测试用例 — Mock 站点描述模板</h1>
+<p>每个测试模板对应一个 mock 站点，运营拿去就能用。引擎会自动定位元素执行。</p>
+<p><strong>Mock Server 地址：</strong> <code>http://192.168.1.51:8080</code></p>
+<hr />
+<h2>全部站点速查</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>访问地址</th>
+<th>站点说明</th>
+<th>类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td></td>
+<td><strong>基础表单</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>http://192.168.1.51:8080/nexaralai/contact</code></td>
+<td>标准联系表单（Name+Email+Select+Textarea）</td>
+<td>contact_form</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>http://192.168.1.51:8080/no-label-form</code></td>
+<td>无 label 表单（只有 placeholder+aria-label）</td>
+<td>newsletter</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>http://192.168.1.51:8080/nested-buttons</code></td>
+<td>嵌套按钮（button&gt;span&gt;span）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>http://192.168.1.51:8080/renttoown</code></td>
+<td>GHL 表单（data-q + 蜜罐字段）</td>
+<td>home_improvement</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>下拉框 &amp; 选择器</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>http://192.168.1.51:8080/mui-select</code></td>
+<td>MUI Select（div[role=combobox]）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>http://192.168.1.51:8080/react-select</code></td>
+<td>React Select（css-select__control + multi）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>http://192.168.1.51:8080/ant-design</code></td>
+<td>Ant Design（ant-select-dropdown）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>http://192.168.1.51:8080/dob-select</code></td>
+<td>生日三下拉框（月/日/年 select）</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Radio 单选</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>9</td>
+<td><code>http://192.168.1.51:8080/radio-group</code></td>
+<td>4种 Radio 模式（原生/MUI/div伪/图片卡）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>http://192.168.1.51:8080/province-select</code></td>
+<td>按钮卡片省选择（button grid)</td>
+<td>general</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>http://192.168.1.51:8080/dob-buttons</code></td>
+<td>按钮网格生日（月按钮 grid）</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>真实站点</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>https://lp2.canadianliferates.ca/</code></td>
+<td>加拿大保险全流程（省/性别/保额/DOB/邮编/个人信息）</td>
+<td>Life</td>
+</tr>
+<tr>
+<td>11</td>
+<td><code>http://192.168.1.51:8080/ctm</code></td>
+<td>保险多页（radio→checkbox→input）</td>
+<td>health_insurance</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Checkbox 勾选</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>12</td>
+<td><code>http://192.168.1.51:8080/mui-checkbox</code></td>
+<td>MUI Toggle Switch（隐藏input+label在后）</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>多步 SPA / Wizard</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>13</td>
+<td><code>http://192.168.1.51:8080/spa-steps</code></td>
+<td>SPA 三步（ZIP→Name→Email，异步切换）</td>
+<td>newsletter</td>
+</tr>
+<tr>
+<td>14</td>
+<td><code>http://192.168.1.51:8080/solarforall</code></td>
+<td>太阳能 Wizard（省份→电费→联系信息）</td>
+<td>home_improvement</td>
+</tr>
+<tr>
+<td>15</td>
+<td><code>http://192.168.1.51:8080/removemenow/freescan</code></td>
+<td>隐私扫描（fname+lname+email+age+zip）</td>
+<td>newsletter</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code>http://192.168.1.51:8080/seniorbath/form</code></td>
+<td>Walk-in Tub（ZIP→Name→Terms）</td>
+<td>home_improvement</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Quiz 答题</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>17</td>
+<td><code>http://192.168.1.51:8080/survey-form</code></td>
+<td>SurveyJS 风格（5题：radio/checkbox/textarea/rating/email）</td>
+<td>survey</td>
+</tr>
+<tr>
+<td>18</td>
+<td><code>http://192.168.1.51:8080/tabca</code></td>
+<td>车辆融资 Quiz（2题 icon 按钮）</td>
+<td>quiz</td>
+</tr>
+<tr>
+<td>19</td>
+<td><code>http://192.168.1.51:8080/geminihealth</code></td>
+<td>敏感度 Quiz（5题 funnel）</td>
+<td>quiz</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>Slider 滑块</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>20</td>
+<td><code>http://192.168.1.51:8080/range-slider</code></td>
+<td>Range 滑块（dispatchEvent）</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>MUI TextField</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>21</td>
+<td><code>http://192.168.1.51:8080/mui-textfield</code></td>
+<td>MUI TextField ×4（label无for，_r_1_动态id）</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>组件库专项</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>22</td>
+<td><code>http://192.168.1.51:8080/chakra-form</code></td>
+<td>Chakra UI（data-invalid, chakra-form__error）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>23</td>
+<td><code>http://192.168.1.51:8080/shadcn-form</code></td>
+<td>shadcn/ui（data-slot=form-item, text-destructive）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>24</td>
+<td><code>http://192.168.1.51:8080/modform</code></td>
+<td>Emotion CSS-in-JS（slotswise 1:1复刻）</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>iframe 嵌套</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>25</td>
+<td><code>http://192.168.1.51:8080/</code></td>
+<td>entyrecare iframe 13步表单</td>
+<td>health_insurance</td>
+</tr>
+<tr>
+<td>26</td>
+<td><code>http://192.168.1.51:8080/irspenalty</code></td>
+<td>IRS Penalty iframe 表单</td>
+<td>general</td>
+</tr>
+<tr>
+<td></td>
+<td><strong>复杂综合</strong></td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>27</td>
+<td><code>http://192.168.1.51:8080/ace</code></td>
+<td>赌场注册（弹窗+exit popup）</td>
+<td>casino</td>
+</tr>
+<tr>
+<td>28</td>
+<td><code>http://192.168.1.51:8080/spree</code></td>
+<td>年龄门+modal弹窗</td>
+<td>casino</td>
+</tr>
+<tr>
+<td>29</td>
+<td><code>http://192.168.1.51:8080/livebeam</code></td>
+<td>DOM wizard（全部在同一页）</td>
+<td>dating</td>
+</tr>
+<tr>
+<td>30</td>
+<td><code>http://192.168.1.51:8080/datewhirl</code></td>
+<td>SPA quiz + 动态标签</td>
+<td>dating</td>
+</tr>
+<tr>
+<td>31</td>
+<td><code>http://192.168.1.51:8080/tello</code></td>
+<td>多页面跳转（5页注册）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>32</td>
+<td><code>http://192.168.1.51:8080/reactapp</code></td>
+<td>React hash DOM（CSS Modules + data-field）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>33</td>
+<td><code>http://192.168.1.51:8080/carwarranty</code></td>
+<td>车辆保修（select 年/品牌/型号）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>34</td>
+<td><code>http://192.168.1.51:8080/fishinvest</code></td>
+<td>投资问卷（生日+密码）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>35</td>
+<td><code>http://192.168.1.51:8080/mortgagequiz</code></td>
+<td>房贷 Quiz（房价滑块）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>36</td>
+<td><code>http://192.168.1.51:8080/garagefloor</code></td>
+<td>家装 Quiz（楼梯数+ZIP）</td>
+<td>home_improvement</td>
+</tr>
+<tr>
+<td>37</td>
+<td><code>http://192.168.1.51:8080/gravityform</code></td>
+<td>WordPress GF 表单</td>
+<td>general</td>
+</tr>
+<tr>
+<td>38</td>
+<td><code>http://192.168.1.51:8080/showerlead</code></td>
+<td>家装 SMS opt-in</td>
+<td>home_improvement</td>
+</tr>
+<tr>
+<td>39</td>
+<td><code>http://192.168.1.51:8080/casinospin</code></td>
+<td>幸运转盘（spin→signup→success）</td>
+<td>casino</td>
+</tr>
+<tr>
+<td>40</td>
+<td><code>http://192.168.1.51:8080/tarotcard</code></td>
+<td>塔罗牌选卡 funnel</td>
+<td>general</td>
+</tr>
+<tr>
+<td>41</td>
+<td><code>http://192.168.1.51:8080/lilacworks</code></td>
+<td>两步 select 表单</td>
+<td>general</td>
+</tr>
+<tr>
+<td>42</td>
+<td><code>http://192.168.1.51:8080/freedomdebt</code></td>
+<td>债务减免（SSN+spinner）</td>
+<td>general</td>
+</tr>
+<tr>
+<td>43</td>
+<td><code>http://192.168.1.51:8080/protectsav</code></td>
+<td>popup 表单 + name=* 选择器</td>
+<td>general</td>
+</tr>
+<tr>
+<td>44</td>
+<td><code>http://192.168.1.51:8080/nexaralai</code></td>
+<td>Nexaral AI 首页</td>
+<td>landing</td>
+</tr>
+<tr>
+<td>45</td>
+<td><code>http://192.168.1.51:8080/removemenow</code></td>
+<td>RemoveMe 首页+FAQ</td>
+<td>landing</td>
+</tr>
+<tr>
+<td>46</td>
+<td><code>http://192.168.1.51:8080/compareinsulation</code></td>
+<td>隔热评估入口页</td>
+<td>landing</td>
+</tr>
+<tr>
+<td>47</td>
+<td><code>http://192.168.1.51:8080/connecthearing</code></td>
+<td>听力评估入口页</td>
+<td>landing</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>一、基础表单类</h2>
+<h3>1.1 标准联系表单（nexaralai）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/nexaralai/contact
+类型: contact_form
+
+成功: 页面出现 Message Sent
+
+操作:
+1. 等待1-2秒
+2. 填 Name(placeholder=Your name)
+3. 填 Email(placeholder=you@example.co.uk)
+4. 选择Subject(选General enquiry)
+5. 填 Message(placeholder=Your message...)
+6. 点 Send Message
+</code></pre>
+<h3>1.2 无 label 表单（no-label-form）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/no-label-form
+类型: newsletter
+
+成功: 页面出现 Thank you  
+
+操作:
+1. 填 ZIP Code
+2. 填 Email
+3. 填 Phone
+4. 点击Get Started按钮
+</code></pre>
+<h3>1.3 嵌套按钮表单（nested-buttons）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/nested-buttons
+类型: general
+
+成功: 页面出现 Thank you  
+
+操作:
+1. 点击Next
+2. 点击Continue
+3. 点击Submit
+</code></pre>
+<hr />
+<h2>二、下拉框 &amp; 选择器类</h2>
+<h3>2.1 原生 Select + 下拉框（mui-select）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/mui-select
+类型: general
+
+成功: 页面出现 form submitted  
+
+操作:
+1. 选择State(选California)
+2. 点 Submit
+</code></pre>
+<h3>2.2 React Select 风格（react-select）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/react-select
+类型: general
+
+成功: 页面出现 ✓ Country:  
+
+操作:
+1. 选择Country(选United States)
+2. 选择Interests(选Technology)
+3. 选择Interests(选Finance)
+4. 点 Submit
+</code></pre>
+<h3>2.3 Ant Design Select（ant-design）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/ant-design
+类型: general
+
+成功: 页面出现 success  
+
+操作:
+1. 填 Full Name
+2. 填 Email
+3. 填 Phone Number
+4. 选择Country(选United States)
+5. 勾选Terms
+6. 点 Submit
+</code></pre>
+<h3>2.4 生日三下拉框（dob-select）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/dob-select
+类型: general
+
+成功: 页面出现 Registered!  
+
+操作:
+1. 填 Email
+2. 选择Month(选随机)
+3. 选择Day(选随机)
+4. 选择Year(选随机)
+5. 点 Submit
+</code></pre>
+<hr />
+<h2>三、Radio 单选类</h2>
+<h3>3.1 四种 Radio 模式（radio-group）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/radio-group
+类型: general
+
+成功: 页面出现 ✓ Plan:  
+
+操作:
+1. 选择Basic Plan（单选)
+2. 选择Developer（单选)
+3. 选择Intermediate（单选)
+4. 选择Morning（单选)
+5. 点 Submit
+</code></pre>
+<h3>3.2 保险表单 Radio + DOB（ctm）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/ctm
+类型: health_insurance
+
+成功: URL包含 results
+
+操作:
+1. 点击Compare Health Insurance
+2. 随机选一个选项
+3. 随机选一个选项
+4. 填 DD
+5. 填 MM
+6. 填 YYYY
+7. 随机选一个选项
+8. 勾选I agree
+9. 点 Next
+10. 勾选至少一个benefit
+11. 点 Next
+12. 填 Name
+13. 填 Email
+14. 填 Phone
+15. 点 Submit
+</code></pre>
+<hr />
+<h2>四、Checkbox 勾选类</h2>
+<h3>4.1 Toggle Switch Checkbox（mui-checkbox）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/mui-checkbox
+类型: general
+
+成功: 页面出现 Thank you  
+
+操作:
+1. 勾选I agree to the Terms
+2. 勾选I want to receive marketing emails
+3. 点 Submit
+</code></pre>
+<h3>4.2 同意条款 Checkbox（renttoown）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/renttoown
+类型: home_improvement
+
+成功: 页面出现 Thank You  
+
+操作:
+1. 填 Postal Code
+2. 填 First Name
+3. 填 Last Name
+4. 填 Phone
+5. 填 Email
+6. 勾选I consent
+7. 点 Submit
+</code></pre>
+<hr />
+<h2>五、多步 SPA 类</h2>
+<h3>5.1 SPA 三步表单（spa-steps）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/spa-steps
+类型: newsletter
+
+成功: 页面出现 Registration Complete  
+
+操作:
+1. 填 ZIP Code
+2. 点 Continue
+3. 等待1-2秒
+4. 填 Full Name
+5. 点 Continue
+6. 等待1-2秒
+7. 填 Email
+8. 点 Submit
+</code></pre>
+<h3>5.2 太阳能 Wizard（solarforall）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/solarforall
+类型: home_improvement
+
+成功: 页面出现 Thank You  
+
+操作:
+1. 点击Ontario按钮
+2. 等待1秒
+3. 点击$150 – $250按钮
+4. 等待1秒
+5. 填写First name
+6. 填写Last name
+7. 填写Email address
+8. 填写Phone number
+9. 勾选I agree
+10. 点 Continue
+</code></pre>
+<h3>5.3 隐私扫描多步（removemenow）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/removemenow/freescan
+类型: newsletter
+
+成功: 页面出现 Scan Complete  
+
+操作:
+1. 填 First Name
+2. 填 Last Name
+3. 填写Email
+4. 填写Age
+5. 填写Zip Code
+6. 点击Scan Now for Free按钮
+</code></pre>
+<hr />
+<h2>六、Quiz 答题类</h2>
+<h3>6.1 Quiz 答题（survey-form）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/survey-form
+类型: survey
+
+成功: 页面出现 Thank You for Your Feedback!
+
+操作:
+1. 随机选一个选项（第1题）
+2. 点 Next
+3. 随机选一个选项（第2题）
+4. 点 Next
+5. 填改进建议
+6. 点 Next
+7. 选择评分5
+8. 点 Next
+9. 填 Email
+10. 点 Submit
+</code></pre>
+<h3>6.2 车辆融资 Quiz（tabca）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/tabca
+类型: quiz
+
+成功: 页面出现 Proposal sent  
+
+操作:
+1. 随机选一个选项（第1题）
+2. 随机选一个选项（第2题）
+3. 填 Email
+4. 点击See my proposal按钮
+</code></pre>
+<hr />
+<h2>七、Slider 滑块类</h2>
+<h3>7.1 Range 滑块（range-slider）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/range-slider
+类型: general
+
+成功: 页面出现 Thank you  
+
+操作:
+1. 拖动债务金额到75000
+2. 点击Get Relief Options按钮
+</code></pre>
+<hr />
+<h2>八、组件库专项</h2>
+<h3>8.1 Chakra UI 表单（chakra-form）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/chakra-form
+类型: general
+
+成功: 页面出现 success successfully  
+
+操作:
+1. 填 First Name
+2. 填 Last Name
+3. 填写Email
+4. 填 Phone Number
+5. 点 Submit
+</code></pre>
+<h3>8.2 shadcn/ui 表单（shadcn-form）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/shadcn-form
+类型: general
+
+成功: 页面出现 Account created  
+
+操作:
+1. 填 Full Name
+2. 填写Email
+3. 填 Phone Number
+4. 勾选I accept the terms
+5. 点 Submit
+</code></pre>
+<hr />
+<h2>九、iframe 嵌套类</h2>
+<h3>9.1 iframe 多步表单（entyrecare）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/
+类型: health_insurance
+
+成功: URL包含 verify
+
+操作:
+1. 点击Check Eligibility
+2. 等待3秒
+3. 点击Ohio
+4. 填写ZIP
+5. 点 Next
+6. 随机选一个选项
+7. 随机选一个选项
+8. 随机选一个选项
+9. 随机选一个选项
+10. 随机选一个选项
+11. 随机选一个选项
+12. 随机选一个选项
+13. 填写First name
+14. 填写Last name
+15. 点 Next
+16. 填写Email
+17. 填写Phone
+18. 随机选一个选项
+19. 勾选I accept
+20. 点 Submit
+</code></pre>
+<hr />
+<h2>十、复杂综合类</h2>
+<h3>10.1 赌场注册 + 弹窗（ace）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/ace
+类型: casino
+
+成功: 页面出现 Welcome to Ace
+
+操作:
+1. 等待1-2秒
+2. 点击Continue
+3. 等0.5秒
+4. 填 Email
+5. 填 Password
+6. 点击Continue
+7. 等待2-3秒
+8. 点击Continue
+9. 等0.5秒
+10. 填 First Name
+11. 填 Last Name
+12. 填 Day
+13. 选择Month(选随机)
+14. 填 Year
+15. Select Country(选Canada)
+16. 点击Continue
+17. 等待1-2秒
+18. 点击Leave
+</code></pre>
+<h3>10.2 太阳能 Lead Gen（solarforall）</h3>
+<pre><code>页面URL: http://192.168.1.51:8080/solarforall
+类型: home_improvement
+
+成功: 页面出现 Thank You  
+
+操作:
+1. 点击Ontario按钮
+2. 等待1秒
+3. 点击$150 – $250按钮
+4. 等待1秒
+5. 填写First name
+6. 填写Last name
+7. 填写Email address
+8. 填写Phone number
+9. 勾选I agree
+10. 点 Continue
+</code></pre></body></html>

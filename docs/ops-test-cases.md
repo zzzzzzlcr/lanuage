@@ -22,7 +22,10 @@
 | 8 | `http://192.168.1.51:8080/dob-select` | 生日三下拉框（月/日/年 select） | general |
 | | **Radio 单选** | | |
 | 9 | `http://192.168.1.51:8080/radio-group` | 4种 Radio 模式（原生/MUI/div伪/图片卡） | general |
-| 10 | `http://192.168.1.51:8080/healthwindow` | Radio + DOB + 邮编 | health_insurance |
+| 10 | `http://192.168.1.51:8080/province-select` | 按钮卡片省选择（button grid) | general |
+| 11 | `http://192.168.1.51:8080/dob-buttons` | 按钮网格生日（月按钮 grid） | general |
+| | **真实站点** | | |
+| 12 | `https://lp2.canadianliferates.ca/` | 加拿大保险全流程（省/性别/保额/DOB/邮编/个人信息） | Life |
 | 11 | `http://192.168.1.51:8080/ctm` | 保险多页（radio→checkbox→input） | health_insurance |
 | | **Checkbox 勾选** | | |
 | 12 | `http://192.168.1.51:8080/mui-checkbox` | MUI Toggle Switch（隐藏input+label在后） | general |
@@ -79,14 +82,15 @@
 页面URL: http://192.168.1.51:8080/nexaralai/contact
 类型: contact_form
 
-成功: 页面出现 "Message Sent"
+成功: 页面出现 Message Sent
 
 操作:
-1. 填写姓名
-2. 填写邮箱
-3. 选择Subject（下拉框，选General enquiry）
-4. 填写Message
-5. 点击Send Message按钮
+1. 等待1-2秒
+2. 填 Name(placeholder=Your name)
+3. 填 Email(placeholder=you@example.co.uk)
+4. 选择Subject(选General enquiry)
+5. 填 Message(placeholder=Your message...)
+6. 点 Send Message
 ```
 
 ### 1.2 无 label 表单（no-label-form）
@@ -95,12 +99,12 @@
 页面URL: http://192.168.1.51:8080/no-label-form
 类型: newsletter
 
-成功: 页面出现 "Thank you"
+成功: 页面出现 Thank you  
 
 操作:
-1. 填写ZIP Code
-2. 填写邮箱
-3. 填写手机号
+1. 填 ZIP Code
+2. 填 Email
+3. 填 Phone
 4. 点击Get Started按钮
 ```
 
@@ -110,7 +114,7 @@
 页面URL: http://192.168.1.51:8080/nested-buttons
 类型: general
 
-成功: 页面出现 "Thank you"
+成功: 页面出现 Thank you  
 
 操作:
 1. 点击Next
@@ -128,11 +132,11 @@
 页面URL: http://192.168.1.51:8080/mui-select
 类型: general
 
-成功: 页面出现 "Selected:"
+成功: 页面出现 form submitted  
 
 操作:
-1. 选择State（下拉框，选California）
-2. 点击Submit按钮
+1. 选择State(选California)
+2. 点 Submit
 ```
 
 ### 2.2 React Select 风格（react-select）
@@ -141,13 +145,13 @@
 页面URL: http://192.168.1.51:8080/react-select
 类型: general
 
-成功: 页面出现 "✓ Country:"
+成功: 页面出现 ✓ Country:  
 
 操作:
-1. 选择Country（下拉框，选United States）
-2. 选择Interests（下拉框，选Technology）
-3. 选择Interests（下拉框，选Finance）
-4. 点击Submit按钮
+1. 选择Country(选United States)
+2. 选择Interests(选Technology)
+3. 选择Interests(选Finance)
+4. 点 Submit
 ```
 
 ### 2.3 Ant Design Select（ant-design）
@@ -156,15 +160,15 @@
 页面URL: http://192.168.1.51:8080/ant-design
 类型: general
 
-成功: 页面出现 "Form submitted"
+成功: 页面出现 success  
 
 操作:
-1. 填写Full Name
-2. 填写Email Address
-3. 填写Phone Number
-4. 选择Country（下拉框，选United States）
+1. 填 Full Name
+2. 填 Email
+3. 填 Phone Number
+4. 选择Country(选United States)
 5. 勾选Terms
-6. 点击Submit按钮
+6. 点 Submit
 ```
 
 ### 2.4 生日三下拉框（dob-select）
@@ -173,14 +177,14 @@
 页面URL: http://192.168.1.51:8080/dob-select
 类型: general
 
-成功: 页面出现 "Registered!"
+成功: 页面出现 Registered!  
 
 操作:
-1. 填写Email Address
-2. 选择Month（下拉框，选6）
-3. 选择Day（下拉框，选15）
-4. 选择Year（下拉框，选1990）
-5. 点击Submit按钮
+1. 填 Email
+2. 选择Month(选随机)
+3. 选择Day(选随机)
+4. 选择Year(选随机)
+5. 点 Submit
 ```
 
 ---
@@ -193,14 +197,14 @@
 页面URL: http://192.168.1.51:8080/radio-group
 类型: general
 
-成功: 页面出现 "✓ Plan:"
+成功: 页面出现 ✓ Plan:  
 
 操作:
-1. 选择Basic Plan（单选）
-2. 选择Developer（单选）
-3. 选择Intermediate（单选）
-4. 选择Morning（单选）
-5. 点击Submit按钮
+1. 选择Basic Plan（单选)
+2. 选择Developer（单选)
+3. 选择Intermediate（单选)
+4. 选择Morning（单选)
+5. 点 Submit
 ```
 
 ### 3.2 保险表单 Radio + DOB（ctm）
@@ -215,18 +219,18 @@
 1. 点击Compare Health Insurance
 2. 随机选一个选项
 3. 随机选一个选项
-4. 填写DD
-5. 填写MM
-6. 填写YYYY
+4. 填 DD
+5. 填 MM
+6. 填 YYYY
 7. 随机选一个选项
 8. 勾选I agree
-9. 点击Next按钮
+9. 点 Next
 10. 勾选至少一个benefit
-11. 点击Next按钮
-12. 填写姓名
-13. 填写邮箱
-14. 填写手机号
-15. 点击Submit按钮
+11. 点 Next
+12. 填 Name
+13. 填 Email
+14. 填 Phone
+15. 点 Submit
 ```
 
 ---
@@ -239,12 +243,12 @@
 页面URL: http://192.168.1.51:8080/mui-checkbox
 类型: general
 
-成功: 页面出现 "Thank you"
+成功: 页面出现 Thank you  
 
 操作:
 1. 勾选I agree to the Terms
 2. 勾选I want to receive marketing emails
-3. 点击Submit按钮
+3. 点 Submit
 ```
 
 ### 4.2 同意条款 Checkbox（renttoown）
@@ -253,16 +257,16 @@
 页面URL: http://192.168.1.51:8080/renttoown
 类型: home_improvement
 
-成功: 页面出现 "Thank You"
+成功: 页面出现 Thank You  
 
 操作:
-1. 填写Postal Code
-2. 填写First Name
-3. 填写Last Name
-4. 填写手机号
-5. 填写邮箱
+1. 填 Postal Code
+2. 填 First Name
+3. 填 Last Name
+4. 填 Phone
+5. 填 Email
 6. 勾选I consent
-7. 点击Submit按钮
+7. 点 Submit
 ```
 
 ---
@@ -275,17 +279,17 @@
 页面URL: http://192.168.1.51:8080/spa-steps
 类型: newsletter
 
-成功: 页面出现 "Registration Complete"
+成功: 页面出现 Registration Complete  
 
 操作:
-1. 填写ZIP Code
-2. 点击Continue按钮
+1. 填 ZIP Code
+2. 点 Continue
 3. 等待1-2秒
-4. 填写Full Name
-5. 点击Continue按钮
+4. 填 Full Name
+5. 点 Continue
 6. 等待1-2秒
-7. 填写Email Address
-8. 点击Submit按钮
+7. 填 Email
+8. 点 Submit
 ```
 
 ### 5.2 太阳能 Wizard（solarforall）
@@ -294,7 +298,7 @@
 页面URL: http://192.168.1.51:8080/solarforall
 类型: home_improvement
 
-成功: 页面出现 "Thank You"
+成功: 页面出现 Thank You  
 
 操作:
 1. 点击Ontario按钮
@@ -306,7 +310,7 @@
 7. 填写Email address
 8. 填写Phone number
 9. 勾选I agree
-10. 点击Continue按钮
+10. 点 Continue
 ```
 
 ### 5.3 隐私扫描多步（removemenow）
@@ -315,11 +319,11 @@
 页面URL: http://192.168.1.51:8080/removemenow/freescan
 类型: newsletter
 
-成功: 页面出现 "Scan Complete"
+成功: 页面出现 Scan Complete  
 
 操作:
-1. 填写First Name
-2. 填写Last Name
+1. 填 First Name
+2. 填 Last Name
 3. 填写Email
 4. 填写Age
 5. 填写Zip Code
@@ -336,19 +340,19 @@
 页面URL: http://192.168.1.51:8080/survey-form
 类型: survey
 
-成功: 页面出现 "Thank You for Your Feedback"
+成功: 页面出现 Thank You for Your Feedback!
 
 操作:
 1. 随机选一个选项（第1题）
-2. 点击Next按钮
+2. 点 Next
 3. 随机选一个选项（第2题）
-4. 点击Next按钮
-5. 填写改进建议
-6. 点击Next按钮
-7. 选择评分5星
-8. 点击Next按钮
-9. 填写邮箱
-10. 点击Submit按钮
+4. 点 Next
+5. 填改进建议
+6. 点 Next
+7. 选择评分5
+8. 点 Next
+9. 填 Email
+10. 点 Submit
 ```
 
 ### 6.2 车辆融资 Quiz（tabca）
@@ -357,12 +361,12 @@
 页面URL: http://192.168.1.51:8080/tabca
 类型: quiz
 
-成功: 页面出现 "Proposal sent"
+成功: 页面出现 Proposal sent  
 
 操作:
 1. 随机选一个选项（第1题）
 2. 随机选一个选项（第2题）
-3. 填写邮箱
+3. 填 Email
 4. 点击See my proposal按钮
 ```
 
@@ -376,7 +380,7 @@
 页面URL: http://192.168.1.51:8080/range-slider
 类型: general
 
-成功: 页面出现 "Thank you"
+成功: 页面出现 Thank you  
 
 操作:
 1. 拖动债务金额到75000
@@ -393,14 +397,14 @@
 页面URL: http://192.168.1.51:8080/chakra-form
 类型: general
 
-成功: 页面出现 "Form submitted successfully"
+成功: 页面出现 success successfully  
 
 操作:
-1. 填写First Name
-2. 填写Last Name
+1. 填 First Name
+2. 填 Last Name
 3. 填写Email
-4. 填写Phone Number
-5. 点击Submit按钮
+4. 填 Phone Number
+5. 点 Submit
 ```
 
 ### 8.2 shadcn/ui 表单（shadcn-form）
@@ -409,14 +413,14 @@
 页面URL: http://192.168.1.51:8080/shadcn-form
 类型: general
 
-成功: 页面出现 "Account created"
+成功: 页面出现 Account created  
 
 操作:
-1. 填写Full Name
+1. 填 Full Name
 2. 填写Email
-3. 填写Phone Number
+3. 填 Phone Number
 4. 勾选I accept the terms
-5. 点击Submit按钮
+5. 点 Submit
 ```
 
 ---
@@ -436,7 +440,7 @@
 2. 等待3秒
 3. 点击Ohio
 4. 填写ZIP
-5. 点击Next按钮
+5. 点 Next
 6. 随机选一个选项
 7. 随机选一个选项
 8. 随机选一个选项
@@ -446,12 +450,12 @@
 12. 随机选一个选项
 13. 填写First name
 14. 填写Last name
-15. 点击Next按钮
+15. 点 Next
 16. 填写Email
 17. 填写Phone
 18. 随机选一个选项
 19. 勾选I accept
-20. 点击Submit按钮
+20. 点 Submit
 ```
 
 ---
@@ -464,20 +468,27 @@
 页面URL: http://192.168.1.51:8080/ace
 类型: casino
 
-成功: 页面出现 "Welcome"
+成功: 页面出现 Welcome to Ace
 
 操作:
-1. 填写Email
-2. 填写Password
-3. 点击Continue按钮
-4. 填写First Name
-5. 填写Last Name
-6. 填写Day
-7. 选择Month（下拉框，选June）
-8. 填写Year
-9. 点击Continue按钮
-10. 点击Continue按钮 关闭弹窗
-11. 点击Continue按钮 关闭退出弹窗
+1. 等待1-2秒
+2. 点击Continue
+3. 等0.5秒
+4. 填 Email
+5. 填 Password
+6. 点击Continue
+7. 等待2-3秒
+8. 点击Continue
+9. 等0.5秒
+10. 填 First Name
+11. 填 Last Name
+12. 填 Day
+13. 选择Month(选随机)
+14. 填 Year
+15. Select Country(选Canada)
+16. 点击Continue
+17. 等待1-2秒
+18. 点击Leave
 ```
 
 ### 10.2 太阳能 Lead Gen（solarforall）
@@ -486,7 +497,7 @@
 页面URL: http://192.168.1.51:8080/solarforall
 类型: home_improvement
 
-成功: 页面出现 "Thank You"
+成功: 页面出现 Thank You  
 
 操作:
 1. 点击Ontario按钮
@@ -498,5 +509,5 @@
 7. 填写Email address
 8. 填写Phone number
 9. 勾选I agree
-10. 点击Continue按钮
+10. 点 Continue
 ```

@@ -63,8 +63,14 @@ class VariableResolver:
             return f"{random.randint(1,12):02d}"
         if gen == "dob_day":
             return f"{random.randint(1,28):02d}"
-        if gen == "dob_year":
+        if gen == "dob_year" or gen == "year":
             return str(random.randint(1950, 2005))
+        if gen == "day":
+            return str(random.randint(1, 28))
+        if gen == "month":
+            return random.choice(["January","February","March","April","May","June","July","August","September","October","November","December"])
+        if gen == "text" or gen == "suggestion" or gen == "feedback":
+            return random.choice(["Great service!","Looks good","No complaints","Everything works well","Keep it up","Good experience"])
         if gen.startswith("choice:"):
             opts = gen[7:].split(",")
             return random.choice(opts).strip()

@@ -45,9 +45,9 @@ def _fix_steps(config):
 
 
 def _fix_field_types(step):
-    """Ensure field.type is present."""
+    """Ensure field.type is present. Skip select steps (native selects aren't text inputs)."""
     field = step.get("field", {})
-    if field and not field.get("type"):
+    if field and not field.get("type") and not step.get("select"):
         label = field.get("label", "")
         field["type"] = infer_type(label)
 

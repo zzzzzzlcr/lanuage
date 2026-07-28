@@ -84,7 +84,10 @@ class ElementFinder:
             f"(function(){{var el=document.querySelector('{escaped}');"
             f"if(!el)return'no';"
             f"if(el.offsetWidth>0)return'yes';"
-            f"if(el.id||el.getAttribute('data-testid')||el.getAttribute('aria-label'))return'yes';"
+            f"if(el.id||el.getAttribute('data-testid')||el.getAttribute('aria-label')){{"
+            f"var p=el;for(var lv=0;lv<5;lv++){{p=p.parentElement;if(!p)break;"
+            f"if(p.style&&p.style.display==='none')return'no';"
+            f"var cs=window.getComputedStyle(p);if(cs&&cs.display==='none')return'no';}}}}"
             f"return'no';}})()"
         )
         result = self.cdp.eval(js, frame_id)

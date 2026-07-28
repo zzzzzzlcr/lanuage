@@ -66,8 +66,9 @@ class JSONPipeline:
 | 点击XXX | click | {"action":"click","find":{"text":"XXX"}} |
 | 填邮箱/填姓名/填密码/填写XXX | form | {"action":"form","field":{"label":"XXX","type":"推断"},"value":"{{变量}}"} |
 | 选择XXX（下拉框，选YYY） | form | {"action":"form","field":{"label":"XXX"},"select":"YYY"} |
+| 选择评分N（星级） | form | {"action":"form","field":{"label":"rating"},"select":"N"} |
 | 随机选一个选项 | select | {"action":"select","selection_strategy":{"type":"random"}} |
-| 勾选 XXX | form | {"action":"form","field":{"label":"XXX"},"check":"true"} |
+| 勾选 XXX | form | {"action":"form","field":{"label":"XXX","type":"checkbox"},"check":"true"} |
 | 滚动 | scroll | {"action":"scroll","min":100,"max":500} |
 | 拖动XXX（滚动条） | eval | {"action":"eval","script":"var sl=document.querySelector('input[type=range]');..."} |
 **可用 action：wait, click, form, select, scroll, eval, delay, goto, report**
@@ -100,6 +101,9 @@ class JSONPipeline:
 - 注意: "select"字段的值必须在下拉框的option中精确匹配
 - 关键: 下拉框必须用 "select":"选项值"，绝对不能用 "value"！value是给输入框填文字用的
 - 只要描述里有"（下拉框"字样，就必须用 "select" 而不是 "value"
+- 如果运营写"选随机"或"选一个随机的"→ "select":"__random__"（引擎会打开下拉框随机选一个选项）
+- 如果运营写"选择Birth Month(选随机)"→ "select":"__random__"
+- 如果运营写"选择问题 <问题文字>"→ field.label 直接用<问题文字>原文。例:"选择问题 What Is Your Date of Birth?(选随机)"→ {"field":{"label":"What Is Your Date of Birth?"},"select":"__random__"}
 
 ### 5. quiz随机选项
 {"action":"select","selection_strategy":{"type":"random"}}
@@ -410,38 +414,28 @@ when规则:
                 f"return e?e.tagName:'';}})()", frame_id)
             tag = (tag or '').strip().strip('"').upper()
             if tag and tag != 'SELECT':
-                self.log.info(f"[pipeline] custom select (tag={tag}), using click-based approach")
-                # Find and click the combobox trigger
-                find_js = (
+                # Walk up to find the wrapper (cdp needs it for custom select)
+                find_wrapper = (
                     f"(function(){{var e=document.querySelector('{esc}');"
-                    f"if(e&&e.getAttribute('role')==='combobox'){{e.setAttribute('data-cb-t','1');return'ref';}}"
-                    f"var cb=e?e.closest('[role=combobox]'):null;"
-                    f"if(cb&&cb.offsetWidth>0){{cb.setAttribute('data-cb-t','1');return'ref';}}"
-                    f"var s=e?e.previousElementSibling:null;"
-                    f"if(s&&s.getAttribute('role')==='combobox'){{s.setAttribute('data-cb-t','1');return'ref';}}"
-                    f"var n=e?e.nextElementSibling:null;"
-                    f"if(n&&n.getAttribute('role')==='combobox'){{n.setAttribute('data-cb-t','1');return'ref';}}"
-                    f"return'none';}})()"
+                    f"var a=e;for(var i=0;i<4;i++){{a=a.parentElement;if(!a)break;"
+                    f"if(a.querySelector('[onclick*=toggle],[onclick*=menu],.css-select__control,[role=combobox]'))"
+                    f"{{a.setAttribute('data-csw','1');return'ref';}}"
+                    f"}}return'none';}})()"
                 )
-                r = self.cdp.eval(find_js, frame_id)
-                r = (r or '').strip().strip('"')
-                trigger = '[data-cb-t="1"]' if r == 'ref' else selector
-                self.cdp.click(trigger, frame_id)
-                time.sleep(0.6)
-                # Click the option
-                esc_val = select.replace("'", "\\'")
-                self.cdp.eval(
-                    f"(function(){{var opts=document.querySelectorAll('[role=option]');"
-                    f"for(var i=0;i<opts.length;i++){{"
-                    f"if(opts[i].textContent.trim().indexOf('{esc_val}')!==-1&&opts[i].offsetWidth>0){{"
-                    f"opts[i].click();return;}}}}}})()", frame_id)
-                time.sleep(0.3)
-                return True
+                r = self.cdp.eval(find_wrapper, frame_id)
+                if (r or '').strip().strip('"') == 'ref':
+                    selector = '[data-csw="1"]'
+                    self.log.info(f"[pipeline] Using wrapper for custom select")
         self.cdp.form(selector, value=value, select=select)
         return True
 
     def _post_fix(self, config: dict, result=None) -> dict:
         """Code-based post-processing after LLM fix. Fix common LLM mistakes."""
+        # 0. If step has 'select', remove restrictive 'type' (selects aren't text inputs)
+        for s in config.get("steps", []):
+            if s.get("select") and s.get("field", {}).get("type") == "text":
+                del s["field"]["type"]
+                self.log.info("[post-fix] Removed type=text from select step: %s", s.get("field", {}).get("label"))
         # 1. Ensure loop_until has 'any' wrapper
         lu = config.get("loop_until")
         if lu and "any" not in lu:

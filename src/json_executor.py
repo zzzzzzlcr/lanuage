@@ -457,6 +457,28 @@ class JSONExecutor:
                       'Get','View','Submit','Continue','Next','See','Go','Check']
 
         if stype == "random":
+            # control_types mode: scoped search within quiz container
+            ctl_types = step.get("control_types", [])
+            if ctl_types:
+                container = step.get("container", "document")
+                scope_expr = f"document.querySelector('{container}')" if container != "document" else "document"
+                js = (
+                    f"(function(){{var scope={scope_expr};if(!scope)return'no-scope';"
+                    f"var labels=Array.from(scope.querySelectorAll('label')).filter(function(l){{"
+                    f"var inp=l.querySelector('input[type=checkbox],input[type=radio]');"
+                    f"return inp&&!inp.disabled&&l.offsetWidth>0;}});"
+                    f"if(!labels.length)return'none';"
+                    f"var label=labels[Math.floor(Math.random()*labels.length)];"
+                    f"label.setAttribute('data-sel','1');"
+                    f"return'picked';}})()"
+                )
+                result = self.cdp.eval(js, self._frame_id)
+                if "picked" in str(result):
+                    self.cdp.click('[data-sel=\"1\"]', self._frame_id)
+                    time.sleep(0.2)
+                self.log.info(f"[JSON] quiz select: {str(result).strip()}")
+                return "selected" in result
+
             # Clean up any leftover markers from previous calls
             self.cdp.eval(
                 "(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()",
@@ -490,8 +512,9 @@ class JSONExecutor:
             )
             result = self.cdp.eval(f"(function(){{{js}}})()", self._frame_id)
             if "clicked" in result:
-                # JS .click() for onclick handlers (works for all element types)
-                self.cdp.eval("(function(){var e=document.querySelector('[data-sel=\"1\"]');if(e)e.click();})()", self._frame_id)
+                # CDP real click for reliable event delivery
+                self.cdp.click('[data-sel=\"1\"]', self._frame_id)
+                time.sleep(0.2)
                 self.cdp.eval("(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()", self._frame_id)
                 return True
             return False
@@ -640,6 +663,15 @@ class JSONExecutor:
                                     return False
                     else:
                         selector = self.finder.find(find, fctx)
+                        # Auto-detect iframe: if not found in main frame, search all iframes
+                        if not selector and not self._frame_id:
+                            for fid in self.locator._list_iframes():
+                                sel2 = self.finder.find(find, {"frame_id": fid})
+                                if sel2:
+                                    self._frame_id = fid
+                                    selector = sel2
+                                    self.log.info(f"[JSON] click: auto-detected iframe {fid} for '{find.get('text','')}'")
+                                    break
                     # Fallback: LLM may use "selector" field directly
                     if not selector and step.get("selector"):
                         sel = step["selector"]
@@ -686,6 +718,15 @@ class JSONExecutor:
                                     self.cdp.wait_page_stable(timeout=wait_s * 2)
                                     self.locator.clear_cache()
                                 else:
+                                    # If select is set, try finding by text match as fallback
+                                    sel_text = step.get("select", "")
+                                    label_text = (step.get("field", {}) or {}).get("label", "")
+                                    find_text = sel_text if (sel_text and sel_text != "__random__") else label_text
+                                    if find_text:
+                                        selector = self.finder.find({"text": find_text}, fctx)
+                                        if selector:
+                                            self.log.info(f"[JSON] form: fallback find by text '{find_text}' → {selector}")
+                                            break
                                     self.log.warning(f"[JSON] form: cannot locate field after 3 retries: {e}")
                                     return False
                     else:
@@ -699,6 +740,10 @@ class JSONExecutor:
                     value = step.get("value")
                     check = step.get("check")
                     select = step.get("select")
+                    # Quiz-group detection: __random__ on text anchor near radio/checkbox
+                    if select == "__random__" and not value and not check:
+                        if self._try_quiz_group(selector, self._frame_id):
+                            return True
                     ok = self._smart_form(selector, value=value, check=check, select=select,
                                           frame_id=self._frame_id)
                     if not ok:
@@ -756,6 +801,57 @@ class JSONExecutor:
 
         return False
 
+    def _detect_quiz_scope(self, selector: str, frame_id: str = "") -> str | None:
+        """Detect if selector is a text anchor near radio/checkbox quiz options.
+        Returns container CSS selector if found, None otherwise."""
+        esc = selector.replace("'", "\\'")
+        js = (
+            f"(function(){{var anchor=document.querySelector('{esc}');if(!anchor)return'none';"
+            f"var box=anchor.closest('fieldset,section,[role=group],[role=radiogroup]');"
+            f"if(!box)box=anchor.closest('form,main,div[class*=question],div[class*=quiz],div[class*=card]');"
+            f"if(!box)return'none';"
+            f"var controls=box.querySelectorAll('input[type=checkbox],input[type=radio],[role=checkbox],[role=radio]');"
+            f"if(!controls.length)return'none';"
+            f"var text=box.textContent.toLowerCase();"
+            f"if(/\\b(agree|terms|privacy|consent|subscribe|marketing|policy)\\b/.test(text))return'consent';"
+            f"box.setAttribute('data-quiz-scope','1');"
+            f"return'scope';}})()"
+        )
+        result = self.cdp.eval(js, frame_id)
+        result = str(result).strip().strip('"')
+        if result == 'scope':
+            return '[data-quiz-scope="1"]'
+        return None
+
+    def _try_quiz_group(self, selector: str, frame_id: str = "") -> bool:
+        """Detect quiz option group from text anchor and route accordingly."""
+        import json as _json
+        esc = selector.replace("'", "\\'")
+        js = (
+            "(function(){var anchor=document.querySelector('"+esc+"');"
+            "var q=anchor?anchor.closest('.sv-question,fieldset,[role=group],[role=radiogroup]'):null;"
+            "if(!q)q=document.querySelector('.sv-question.active,fieldset:not([disabled]),[role=radiogroup]');"
+            "if(!q)return JSON.stringify({matched:false});"
+            "var ctls=Array.from(q.querySelectorAll('input[type=\"checkbox\"],input[type=\"radio\"],[role=\"checkbox\"],[role=\"radio\"]')).filter(function(e){return !e.disabled&&e.getAttribute('aria-disabled')!=='true';});"
+            "if(!ctls.length)return JSON.stringify({matched:false});"
+            "var t=(q.textContent||'').toLowerCase();"
+            "if(/agree|terms|privacy|consent|subscribe|marketing|policy/.test(t))return JSON.stringify({matched:false,reason:'consent'});"
+            "q.setAttribute('data-quiz-scope','1');"
+            "return JSON.stringify({matched:true,count:ctls.length,type:ctls[0].type||ctls[0].getAttribute('role')||''});})()"
+        )
+        raw = self.cdp.eval(js, frame_id)
+        try:
+            if isinstance(raw, dict):
+                result = raw
+            else:
+                result = _json.loads(raw)
+                if isinstance(result, str): result = _json.loads(result)
+        except Exception:
+            return False
+        if not result.get("matched"): return False
+        self.log.info(f"[JSON] quiz-group: {result.get('count')} {result.get('type')} controls")
+        return self._select_option({"container":'[data-quiz-scope="1"]',"control_types":["checkbox","radio"],"selection_strategy":{"type":"random"}})
+
     def _smart_form(self, selector: str, value: str = None, check: str = None,
                     select: str = None, frame_id: str = "") -> bool:
         """Handle form interaction for any element type (native or custom widget).
@@ -776,9 +872,12 @@ class JSONExecutor:
         )
         raw = self.cdp.eval(js_info, frame_id)
         try:
-            info = json.loads(raw)
-            if isinstance(info, str):
-                info = json.loads(info)
+            if isinstance(raw, dict):
+                info = raw
+            else:
+                info = json.loads(raw)
+                if isinstance(info, str):
+                    info = json.loads(info)
         except Exception:
             info = {}
         tag = (info.get('tag', '') or '').upper()
@@ -788,15 +887,140 @@ class JSONExecutor:
 
         self.log.info(f"[JSON] smart_form: tag={tag} role={role} type={etype}")
 
+        # --- RANGE / SLIDER (random) ---
+        if select == '__random__' and (etype == 'range' or role == 'slider'):
+            random_js = (
+                f"(function(){{var e=document.querySelector('{esc}');if(!e)return'fail';"
+                f"var mn=parseFloat(e.min)||10000;var mx=parseFloat(e.max)||100000;"
+                f"var v=mn+Math.random()*(mx-mn);e.value=v;"
+                f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
+                f"e.dispatchEvent(new Event('change',{{bubbles:true}}));"
+                f"return JSON.stringify({{value:v}});}})()"
+            )
+            raw = self.cdp.eval(random_js, frame_id)
+            raw_str = str(raw) if not isinstance(raw, str) else raw
+            self.log.info(f"[JSON] smart_form: random range → {raw_str[:120]}")
+            return 'fail' not in raw_str
+
+        # --- RADIO / CHIP / CARD (select=value on non-select elements) ---
+        if select and tag != 'SELECT' and etype != 'select-one':
+            esc_val = select.replace("'", "\\'")
+            # Random: pick a random button/card in the group
+            if select == '__random__':
+                # Mark a random candidate, then CDP-click it (real mouse events for React)
+                mark_js = (
+                    f"(function(){{var e=document.querySelector('{esc}');if(!e)return'fail';"
+                    f"var p=e.parentElement;if(!p)return'fail';"
+                    f"var btns=p.querySelectorAll('button,[role=radio],[role=option],.chip,.pic,label,input[type=radio],input[type=checkbox]');"
+                    f"for(var lv=0;lv<3&&!btns.length;lv++){{p=p.parentElement;if(!p)break;btns=p.querySelectorAll('button,[role=radio],[role=option],.chip,.pic,label,input[type=radio],input[type=checkbox]');}}"
+                    f"var vis=[];for(var i=0;i<btns.length;i++){{var el=btns[i];var t=el.textContent.trim().toLowerCase();if(!t&&(el.type==='radio'||el.type==='checkbox')&&el.parentElement&&el.parentElement.tagName==='LABEL'){{el=el.parentElement;t=el.textContent.trim().toLowerCase();}}if(t&&el.offsetWidth>0&&!el.disabled&&t!=='reset'&&t!=='back'&&t!=='clear'&&t!=='next'&&t!=='previous'&&t!=='continue'&&t!=='submit')vis.push(el);}}"
+                    f"if(!vis.length){{var sec=e.closest('section,div[class*=card],div[class*=container],main,form');if(sec){{btns=sec.querySelectorAll('button,[role=radio],[role=option],.chip,.pic,label,input[type=radio],input[type=checkbox]');for(var i=0;i<btns.length;i++){{var el=btns[i];var t=el.textContent.trim().toLowerCase();if(!t&&(el.type==='radio'||el.type==='checkbox')&&el.parentElement&&el.parentElement.tagName==='LABEL'){{el=el.parentElement;t=el.textContent.trim().toLowerCase();}}if(t&&el.offsetWidth>0&&!el.disabled&&t!=='reset'&&t!=='back'&&t!=='clear'&&t!=='next'&&t!=='previous'&&t!=='continue'&&t!=='submit')vis.push(el);}}}}}}"
+                    f"if(!vis.length)return'fail';var pick=vis[Math.floor(Math.random()*vis.length)];"
+                    f"pick.setAttribute('data-rnd-pick','1');return JSON.stringify({{text:pick.textContent.trim().substring(0,30)}});}})()"
+                )
+                raw = self.cdp.eval(mark_js, frame_id)
+                raw_str = str(raw) if not isinstance(raw, str) else raw
+                if 'fail' in raw_str:
+                    self.log.info(f"[JSON] smart_form: random radio/chip → no candidates")
+                    return False
+                self.cdp.click('[data-rnd-pick=\"1\"]', frame_id)
+                time.sleep(0.3)
+                self.log.info(f"[JSON] smart_form: random radio/chip → {raw_str[:120]}")
+                return True
+            # Specific value: find and click the matching radio/chip/card
+            # Mark the matching element, then CDP-click (real mouse events, works on all pages)
+            mark_js = (
+                f"(function(){{var v='{esc_val.lower()}';"
+                f"var labels=document.querySelectorAll('label');"
+                f"for(var i=0;i<labels.length;i++){{"
+                f"if(labels[i].textContent.trim().toLowerCase().indexOf(v)!==-1&&labels[i].offsetWidth>0){{"
+                f"labels[i].setAttribute('data-rnd-pick','1');return'clicked';}}}}"
+                f"var radios=document.querySelectorAll('input[type=radio][value=\"{esc_val}\" i]');"
+                f"if(radios.length>0){{radios[0].setAttribute('data-rnd-pick','1');return'clicked';}}"
+                f"var chips=document.querySelectorAll('[data-value],.chip,.pic,[class*=rating],[class*=-star]');"
+                f"for(var i=0;i<chips.length;i++){{"
+                f"var dv=chips[i].getAttribute('data-value')||'';"
+                f"if(dv.toLowerCase()===v&&chips[i].offsetWidth>0){{chips[i].setAttribute('data-rnd-pick','1');return'clicked';}}}}"
+                f"for(var i=0;i<chips.length;i++){{"
+                f"var tc=chips[i].textContent.trim();"
+                f"if(tc.toLowerCase()===v&&chips[i].offsetWidth>0){{chips[i].setAttribute('data-rnd-pick','1');return'clicked';}}}}"
+                f"for(var i=0;i<chips.length;i++){{"
+                f"var tc=chips[i].textContent.trim();"
+                f"if(tc.length<20&&tc.toLowerCase().indexOf(v)!==-1&&chips[i].offsetWidth>0){{"
+                f"chips[i].setAttribute('data-rnd-pick','1');return'clicked';}}}}"
+                f"return'not found';}})()"
+            )
+            result = self.cdp.eval(mark_js, frame_id)
+            result = str(result) if not isinstance(result, str) else result
+            if 'clicked' in result:
+                self.cdp.click('[data-rnd-pick=\"1\"]', frame_id)
+                time.sleep(0.2)
+                self.log.info(f"[JSON] smart_form: radio/chip select '{select}' → CDP-clicked")
+                return True
+            # Failed — if this was a radio element, we're done. For other elements, fall through to select.
+
         # --- SELECT / COMBOBOX ---
         if select:
+            # Random select: open dropdown → randomly pick a visible option
+            if select == '__random__':
+                if tag == 'SELECT':
+                    random_js = (
+                        f"(function(){{var e=document.querySelector('{esc}');if(!e)return'fail';"
+                        f"var opts=e.querySelectorAll('option');var vis=[];"
+                        f"for(var i=0;i<opts.length;i++){{if(opts[i].value&&opts[i].textContent.trim())vis.push(opts[i]);}}"
+                        f"if(!vis.length)return'fail';var pick=vis[Math.floor(Math.random()*vis.length)];"
+                        f"e.value=pick.value;e.dispatchEvent(new Event('change',{{bubbles:true}}));"
+                        f"return JSON.stringify({{value:pick.value,text:pick.textContent.trim()}});}})()"
+                    )
+                    raw = self.cdp.eval(random_js, frame_id)
+                    self.log.info(f"[JSON] smart_form: random select → {str(raw)[:120]}")
+                    return 'fail' not in str(raw)
+                else:
+                    # Custom select: click to open, randomly pick visible option
+                    self.cdp.click(selector, frame_id)
+                    time.sleep(0.5)
+                    random_js = (
+                        f"(function(){{var opts=document.querySelectorAll("
+                        f"'[role=option],[class*=select__option],[class*=-option],.css-select__option,.MuiMenuItem-root');"
+                        f"var vis=[];for(var i=0;i<opts.length;i++){{if(opts[i].offsetWidth>0)vis.push(opts[i]);}}"
+                        f"if(!vis.length)return'fail';var pick=vis[Math.floor(Math.random()*vis.length)];"
+                        f"pick.click();return JSON.stringify({{text:pick.textContent.trim()}});}})()"
+                    )
+                    raw = self.cdp.eval(random_js, frame_id)
+                    self.log.info(f"[JSON] smart_form: random custom select → {str(raw)[:120]}")
+                    time.sleep(0.3)
+                    return 'fail' not in str(raw)
+
             if tag == 'SELECT':
                 self.cdp.form(selector, select=select, frame_id=frame_id)
                 return True
             else:
-                # Custom select (MUI, React-Select, etc.): click to open, then click option
-                # Always look for the visible combobox trigger — the native input may be visible
-                # but clicking it won't open the dropdown
+                # Custom select (MUI, React-Select, etc.): try CDP natively first —
+                # cdp.form handles custom selects (click control → open menu → click option).
+                result = self.cdp.form(selector, select=select, frame_id=frame_id)
+                if 'Error' not in result and 'error' not in result.lower():
+                    self.log.info(f"[JSON] smart_form: cdp.form custom select OK")
+                    return True
+                self.log.info(f"[JSON] smart_form: cdp.form failed ({result.strip()[:100]}), trying wrapper")
+                # Try parent wrapper (React Select: hidden input is inside a wrapper div with id)
+                parent_js = (
+                    f"(function(){{var e=document.querySelector('{esc}');if(!e)return'';"
+                    f"var p=e.parentElement;var best='';"
+                    f"while(p&&p!==document.body){{"
+                    f"if(p.id&&p.offsetWidth>0){{best='#'+p.id;"
+                    f"if(p.id.indexOf('wrapper')!==-1||p.id.indexOf('Wrapper')!==-1)return best;}}"
+                    f"p=p.parentElement;}}"
+                    f"return best;}})()"
+                )
+                parent_sel = self.cdp.eval(parent_js, frame_id)
+                parent_sel = (parent_sel or '').strip().strip('"')
+                if parent_sel and not parent_sel.startswith('Error'):
+                    self.log.info(f"[JSON] smart_form: retrying with wrapper {parent_sel}")
+                    result2 = self.cdp.form(parent_sel, select=select, frame_id=frame_id)
+                    if 'Error' not in result2 and 'error' not in result2.lower():
+                        self.log.info(f"[JSON] smart_form: cdp.form wrapper OK")
+                        return True
+                # Fallback: manual click to open, then click option
                 trigger = None
                 find_js = (
                     f"(function(){{var e=document.querySelector('{esc}');"
@@ -831,7 +1055,8 @@ class JSONExecutor:
                     f"'[role=option],[role=listbox] li,[role=listbox] div,"
                     f"ul[role=listbox] li,div[role=presentation] li,"
                     f".MuiMenuItem-root,.MuiAutocomplete-option,"
-                    f"li[data-value],div[data-option-index]');"
+                    f"li[data-value],div[data-option-index],"
+                    f"[class*=select__option],[class*=-option],.css-select__option');"
                     f"for(var i=0;i<opts.length;i++){{"
                     f"if(opts[i].textContent.trim().indexOf('{esc_val}')!==-1&&opts[i].offsetWidth>0){{"
                     f"opts[i].click();return'clicked';}}}}"
@@ -839,6 +1064,14 @@ class JSONExecutor:
                 )
                 result = self.cdp.eval(opt_js, frame_id)
                 self.log.info(f"[JSON] smart_form: custom select option click → {result.strip()}")
+                # Close any open dropdown menus (multi-select doesn't auto-close)
+                close_js = (
+                    f"(function(){{"
+                    f"document.querySelectorAll('[class*=menu],[class*=dropdown],[class*=popup]').forEach("
+                    f"function(m){{m.classList.remove('css-select__menu--open');}});"
+                    f"}})()"
+                )
+                self.cdp.eval(close_js, frame_id)
                 time.sleep(0.3)
                 return True
 

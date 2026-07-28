@@ -1,0 +1,497 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doc</title>
+<style>body{font:14px/1.6 system-ui,sans-serif;max-width:900px;margin:0 auto;padding:20px;background:#fff;color:#222}
+pre{background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:8px;overflow-x:auto}
+pre code{background:transparent;color:inherit;padding:0;font-size:13px}
+code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:13px}
+table{border-collapse:collapse;width:100%;margin:12px 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f5f5f5}
+h2{border-bottom:2px solid #eee;padding-bottom:6px;margin-top:24px}
+h3{margin-top:18px}
+hr{border:none;border-top:1px solid #eee;margin:20px 0}
+a{color:#2563eb}
+</style></head><body>
+<h1>Local Mock Server — 站点清单 &amp; CDP 连接指南</h1>
+<p><strong>分支:</strong> <code>feature/local-mock-server</code> | <strong>工作区:</strong> <code>.claude/worktrees/feature+local-mock-server</code>
+<strong>路径:</strong> <code>/opt/skills/auto-farm-skill/mock_server/</code></p>
+<hr />
+<h2>一、环境启动</h2>
+<pre><code class="language-bash"># 全栈启动（Mock Server + Chrome + VNC）
+cd /opt/skills/auto-farm-skill/.claude/worktrees/feature+local-mock-server
+./start-mock-env.sh
+
+# 仅 Mock Server
+cd mock_server &amp;&amp; python3 app.py &amp;
+
+# 查看 Chrome 操作
+# 浏览器打开 http://192.168.1.51:6080/vnc.html
+</code></pre>
+<hr />
+<h2>二、场景覆盖矩阵</h2>
+<table>
+<thead>
+<tr>
+<th>测试场景</th>
+<th>对应 mock</th>
+<th>复杂度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>正常表单（填表→提交→成功页）</td>
+<td>tello, spree</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td>字段名不匹配（data-field 不是 name）</td>
+<td>reactapp</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td>iframe 嵌套表单（childFrames）</td>
+<td>entyrecare</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td>动态加载 / 需要 wait</td>
+<td>datewhirl, livebeam</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td>radio / checkbox 非标准控件</td>
+<td>ctm, reactapp</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td>多页面跳转（text 找链接）</td>
+<td>tello, ctm</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td>年龄门 / 弹窗（modal 显示隐藏）</td>
+<td>spree, livebeam</td>
+<td>⭐⭐</td>
+</tr>
+<tr>
+<td>React/Vue hash DOM（CSS modules）</td>
+<td>reactapp</td>
+<td>⭐⭐⭐</td>
+</tr>
+<tr>
+<td>随机选择（_click_random_label）</td>
+<td>datewhirl</td>
+<td>⭐⭐</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>三、站点详情</h2>
+<h3>1. entyrecare — iframe 多步表单 ⭐⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/
+路由: / → /calculator → /forms/entyrecare → /forms/entyrecare/step/N → /hub/auth/verify
+脚本: forms/sites/entyrecare.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>URL</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首页</td>
+<td><code>/</code></td>
+<td>点击 "Check Eligibility"</td>
+</tr>
+<tr>
+<td>计算器</td>
+<td><code>/calculator</code></td>
+<td>含 <code>&lt;iframe src="/forms/entyrecare"&gt;</code></td>
+</tr>
+<tr>
+<td>Step 1</td>
+<td><code>/forms/entyrecare</code></td>
+<td>点 "Ohio"</td>
+</tr>
+<tr>
+<td>Step 2</td>
+<td><code>step/2</code></td>
+<td>填 ZIP + Next</td>
+</tr>
+<tr>
+<td>Step 3-10</td>
+<td><code>step/3</code>~<code>step/10</code></td>
+<td>逐一点击选项</td>
+</tr>
+<tr>
+<td>Step 11</td>
+<td><code>step/11</code></td>
+<td>firstName + lastName + Next</td>
+</tr>
+<tr>
+<td>Step 12</td>
+<td><code>step/12</code></td>
+<td>email + phone + 来源 + checkbox + Submit</td>
+</tr>
+<tr>
+<td>成功</td>
+<td><code>/hub/auth/verify</code></td>
+<td>"Enter the code"</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CDP 操作要点：</strong>
+- 必须 <code>cdp snapshot</code> 拿 <code>childFrames[0].frame.frameId</code>
+- 所有 iframe 内操作传 <code>--frame-id</code>
+- <code>_get_frame_id()</code> 每次操作前重新获取</p>
+<pre><code class="language-bash">cdp navi http://localhost:8080/
+# 点 CTA 进入 /calculator
+cdp eval &quot;...click Check Eligibility...&quot; --host 127.0.0.1 --port 9222
+sleep 5
+# 获取 frame_id
+FID=$(cdp snapshot | python3 -c &quot;import sys,json;d=json.load(sys.stdin);print(d['childFrames'][0]['frame']['frameId'])&quot;)
+# iframe 内操作
+cdp eval &quot;...click Ohio...&quot; --frame-id &quot;$FID&quot;
+cdp form &quot;input&quot; --value &quot;44101&quot; --frame-id &quot;$FID&quot;
+</code></pre>
+<hr />
+<h3>2. datewhirl — SPA 动态标签 ⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/datewhirl
+路由: /datewhirl → /news-feed
+脚本: forms/sites/datewhirl.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cookie</td>
+<td>点 "Accept &amp; Continue"</td>
+</tr>
+<tr>
+<td>Quiz 1-8</td>
+<td>随机点 <code>&lt;label&gt;</code> 选项（39 个可选）</td>
+</tr>
+<tr>
+<td>输入 1</td>
+<td>填 firstname + Next</td>
+</tr>
+<tr>
+<td>输入 2</td>
+<td>填 email + Next</td>
+</tr>
+<tr>
+<td>输入 3</td>
+<td>填 password + Next</td>
+</tr>
+<tr>
+<td>最后</td>
+<td>"Thanks" → "I Accept" → "Find matches"</td>
+</tr>
+<tr>
+<td>成功</td>
+<td><code>/news-feed</code>（"Welcome to Datewhirl"）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CDP 操作要点：</strong>
+- 全部在同一个页面，无页面跳转
+- <code>_visible_labels()</code> 获取当前可见 <code>&lt;label&gt;</code>，随机选一个点
+- 问题文本含 <code>?</code>，自动被 <code>_click_random_label</code> 跳过
+- 输入框描述用 <code>&lt;span&gt;</code> 不是 <code>&lt;label&gt;</code>，防止误点</p>
+<pre><code class="language-bash">cdp navi http://localhost:8080/datewhirl
+# 脚本自动处理所有交互
+</code></pre>
+<hr />
+<h3>3. tello — 多页面跳转 ⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/tello
+路由: /tello → /tello/plan → /tello/login → /tello/register → /account/checkout
+脚本: forms/sites/tello.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>页面</th>
+<th>URL</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首页</td>
+<td><code>/tello</code></td>
+<td>点 "Get Unlimited Plan"</td>
+</tr>
+<tr>
+<td>套餐</td>
+<td><code>/tello/plan</code></td>
+<td>点 "I want this plan"</td>
+</tr>
+<tr>
+<td>登录</td>
+<td><code>/tello/login</code></td>
+<td>点 "I'm new"</td>
+</tr>
+<tr>
+<td>注册</td>
+<td><code>/tello/register</code></td>
+<td>填 <code>#i_first_name</code>, <code>#i_last_name</code>, <code>#i_login</code>, <code>#i_password</code>, <code>#i_confirm_password</code>, 勾 <code>#i_terms_and_conditions</code>, 点 "Join Tello"</td>
+</tr>
+<tr>
+<td>成功</td>
+<td><code>/account/checkout</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">cdp navi http://localhost:8080/tello
+</code></pre>
+<hr />
+<h3>4. spree — 年龄门 + 弹窗 ⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/spree
+路由: /spree → /spree/verify-gps → /spree/success
+脚本: forms/sites/spree.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>年龄门</td>
+<td>"Are you 21+" → 点 "Continue"</td>
+</tr>
+<tr>
+<td>弹窗</td>
+<td>modal 显示（初始 display:none）</td>
+</tr>
+<tr>
+<td>填表</td>
+<td><code>#email</code> + <code>#password</code> + checkbox <code>termsAndPrivacy</code></td>
+</tr>
+<tr>
+<td>提交</td>
+<td>点 "Create Free Account"</td>
+</tr>
+<tr>
+<td>GPS</td>
+<td>"Enable Now"</td>
+</tr>
+<tr>
+<td>成功</td>
+<td><code>/spree/success</code>（"my account" / "my rewards"）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h3>5. livebeam — DOM wizard ⭐⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/livebeam
+路由: /livebeam → /auth/login
+脚本: forms/sites/livebeam.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>body text 关键词</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cookie</td>
+<td></td>
+<td>点 "Accept all"</td>
+</tr>
+<tr>
+<td>Age</td>
+<td>"select your age"</td>
+<td>点年龄按钮（18-24 等）</td>
+</tr>
+<tr>
+<td>Yes/No</td>
+<td>"Yes" + "Skip"</td>
+<td>点第一个 button</td>
+</tr>
+<tr>
+<td>Gender</td>
+<td>"you want to meet"</td>
+<td>点 Man/Woman div</td>
+</tr>
+<tr>
+<td>Multi</td>
+<td>"choose all that apply"</td>
+<td>点 label，点 button</td>
+</tr>
+<tr>
+<td>Name</td>
+<td>"what name" / "call you"</td>
+<td>填 input，点 button</td>
+</tr>
+<tr>
+<td>Email</td>
+<td>"enter your email"</td>
+<td>填 input，点 button</td>
+</tr>
+<tr>
+<td>Password</td>
+<td>"create a secure password"</td>
+<td>填 input，点 button</td>
+</tr>
+<tr>
+<td>Terms</td>
+<td>"i accept" / "one last step"</td>
+<td>点 button</td>
+</tr>
+<tr>
+<td>成功</td>
+<td><code>/auth/login</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>CDP 操作要点：</strong>
+- 所有步骤元素在 DOM 中，不显示/隐藏切换
+- 通过 <code>document.body.innerText</code> 关键词判断当前步骤
+- <code>_click_first_btn()</code> 点第一个可见 button</p>
+<hr />
+<h3>6. ctm — 保险 radio/checkbox 多页 ⭐⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/ctm
+路由: /ctm → /ctm/health_quote_v4.jsp → /ctm/results
+脚本: forms/sites/comparethemarket_health_v2.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>页面</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>首页 <code>/ctm</code></td>
+<td>点 "Compare Health Insurance"</td>
+</tr>
+<tr>
+<td>About You</td>
+<td>radio <code>#health_situation_healthCvr_*</code>, <code>#health_healthCover_income_*</code>, DOB 三字段, cover radio, T&amp;C checkbox</td>
+</tr>
+<tr>
+<td>Benefits</td>
+<td>8 个 checkbox <code>#cb0</code>~<code>#cb7</code></td>
+</tr>
+<tr>
+<td>Contact</td>
+<td>name, email, phone</td>
+</tr>
+<tr>
+<td>Results <code>#results</code></td>
+<td>报价展示</td>
+</tr>
+</tbody>
+</table>
+<p><strong>CDP 操作要点：</strong>
+- <code>_click_radio()</code> 通过 <code>dispatchEvent(new Event('change'))</code> 触发
+- <code>_rand_check()</code> 随机勾选 checkbox
+- <code>a.btn-next</code> 翻页</p>
+<hr />
+<h3>7. reactapp — React/Vue hash DOM ⭐⭐⭐</h3>
+<pre><code>入口: http://localhost:8080/reactapp
+路由: /reactapp → /reactapp/thank-you
+脚本: 无（通用测试）
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>特点</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>hash ID</td>
+<td><code>jG8k2-mN4p-7xQw1</code>, <code>input-fN3vR-aG9tQ</code></td>
+</tr>
+<tr>
+<td>CSS module class</td>
+<td><code>_3kL9q_</code>, <code>_7mX2d_</code>, <code>_8tB4n_</code></td>
+</tr>
+<tr>
+<td>data-field 属性</td>
+<td><code>data-field="postal_code"</code></td>
+</tr>
+<tr>
+<td>无 <code>&lt;label&gt;</code></td>
+<td>全用 <code>&lt;span&gt;</code></td>
+</tr>
+<tr>
+<td>styled div 替代 radio</td>
+<td><code>data-value="auto"</code></td>
+</tr>
+<tr>
+<td>hidden checkbox</td>
+<td><code>display:none</code> + wrapper toggle</td>
+</tr>
+<tr>
+<td>Honeypot</td>
+<td><code>left:-9999px</code> 隐藏陷阱字段</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">cdp navi http://localhost:8080/reactapp
+# 脚本只能靠 placeholder 文本、data-field 属性、元素文字内容来找元素
+</code></pre>
+<hr />
+<h2>四、通用输入校验</h2>
+<p>所有站点均应用以下校验：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ZIP</td>
+<td>只允许数字, 5 位, oninput 过滤</td>
+</tr>
+<tr>
+<td>邮箱</td>
+<td><code>/^[^\s@]+@[^\s@]+\.[^\s@]+$/</code></td>
+</tr>
+<tr>
+<td>电话</td>
+<td>只允许数字, ≥10 位, oninput 过滤</td>
+</tr>
+<tr>
+<td>密码</td>
+<td>6-8 位最小长度</td>
+</tr>
+<tr>
+<td>DOB</td>
+<td>月 1-12, 日 1-31, 年 1920-2010</td>
+</tr>
+<tr>
+<td>必填</td>
+<td>空字段拦截 + <code>#dc2626</code> 红色错误</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>五、设计原则</h2>
+<ol>
+<li><strong><code>&lt;label&gt;</code> 只能用于可点击选项</strong> — 输入框描述用 <code>&lt;span&gt;</code>，避免 <code>_visible_labels()</code> 误触</li>
+<li><strong>问题文本含 <code>?</code></strong> — <code>_click_random_label</code> 自动跳过</li>
+<li><strong>iframe 同源</strong> — 全部 <code>localhost:8080</code></li>
+<li><strong>offsetWidth &gt; 0</strong> — 隐藏步骤元素自然被过滤</li>
+<li><strong>body text 关键词匹配</strong> — 每个 mock 的文本严格匹配对应脚本的检测条件</li>
+</ol>
+</body></html>

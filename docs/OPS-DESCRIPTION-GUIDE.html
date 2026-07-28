@@ -1,0 +1,346 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Doc</title>
+<style>body{font:14px/1.6 system-ui,sans-serif;max-width:900px;margin:0 auto;padding:20px;background:#fff;color:#222}
+pre{background:#1e1e1e;color:#d4d4d4;padding:16px;border-radius:8px;overflow-x:auto}
+pre code{background:transparent;color:inherit;padding:0;font-size:13px}
+code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:13px}
+table{border-collapse:collapse;width:100%;margin:12px 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f5f5f5}
+h2{border-bottom:2px solid #eee;padding-bottom:6px;margin-top:24px}
+h3{margin-top:18px}
+hr{border:none;border-top:1px solid #eee;margin:20px 0}
+a{color:#2563eb}
+</style></head><body>
+<h1>运营脚本描述规范 v5</h1>
+<p>运营用自然语言描述页面流程，引擎运行时自动定位元素。<strong>不需要写任何 HTML/CSS/selector。</strong></p>
+<hr />
+<h2>模板</h2>
+<h3>线性模式（推荐）</h3>
+<p>固定步骤流程，每一步编号：</p>
+<pre><code>页面URL: &lt;网址&gt;
+类型: casino|dating|newsletter|health_insurance|home_improvement|...
+
+成功: URL包含 &lt;关键词&gt; 或 页面出现 &lt;文字&gt;
+
+操作:
+&lt;序号&gt;. &lt;动词&gt; &lt;对象&gt;
+</code></pre>
+<h3>状态机模式（quiz/动态页面）</h3>
+<p>流程不固定时使用，引擎每轮检查页面状态：</p>
+<pre><code>loop_until: URL包含 &lt;关键词&gt; 或 页面出现 &lt;文字&gt;
+
+操作:
+&lt;序号&gt;. &lt;动词&gt; &lt;对象&gt;（先执行的固定步骤）
+
+when_&lt;条件&gt;: &lt;做什么&gt;
+</code></pre>
+<hr />
+<h2>动词</h2>
+<table>
+<thead>
+<tr>
+<th>写什么</th>
+<th>引擎做的事</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>填邮箱 / 填写邮箱</td>
+<td>自动找邮箱输入框填入</td>
+</tr>
+<tr>
+<td>填姓名 / 填写姓名</td>
+<td>自动找姓名输入框填入</td>
+</tr>
+<tr>
+<td>填密码 / 填写密码</td>
+<td>自动找密码输入框填入</td>
+</tr>
+<tr>
+<td>填手机号 / 填写手机号</td>
+<td>自动找手机号输入框填入</td>
+</tr>
+<tr>
+<td>填写XXX（输入框id=yyy）</td>
+<td>按 id 精确定位输入框填入</td>
+</tr>
+<tr>
+<td>点击XXX</td>
+<td>找文字是"XXX"的按钮/链接点它</td>
+</tr>
+<tr>
+<td>点击XXX按钮</td>
+<td>同上，明确是按钮</td>
+</tr>
+<tr>
+<td>等待 X-Y 秒</td>
+<td>随机等 X-Y 秒</td>
+</tr>
+<tr>
+<td>滚动</td>
+<td>模拟人浏览页面</td>
+</tr>
+<tr>
+<td>随机选一个选项</td>
+<td>当前页面可见选项中随机点一个</td>
+</tr>
+<tr>
+<td>随机选一个选项（第N题）</td>
+<td>同前，标注题号便于 LLM 理解</td>
+</tr>
+<tr>
+<td>选择XXX（下拉框，选YYY）</td>
+<td>找 select 下拉框，选中值为 YYY 的 option</td>
+</tr>
+<tr>
+<td>选择XXX（下拉框id=zzz，选YYY）</td>
+<td>按 id 精确定位 select，选中 YYY</td>
+</tr>
+<tr>
+<td>勾选 XXX</td>
+<td>勾选复选框</td>
+</tr>
+<tr>
+<td>拖动XXX（滚动条）</td>
+<td>滑块/range 设值</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>动作类型速查（给 LLM 用的，运营不用看）</h2>
+<table>
+<thead>
+<tr>
+<th>运营动词</th>
+<th>JSON action</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>等待</td>
+<td>wait</td>
+<td><code>{"action":"wait","min":X,"max":Y}</code> 秒</td>
+</tr>
+<tr>
+<td>点击</td>
+<td>click</td>
+<td><code>{"action":"click","find":{"text":"XXX"}}</code></td>
+</tr>
+<tr>
+<td>填/填写</td>
+<td>form</td>
+<td><code>{"action":"form","field":{...},"value":"..."}</code></td>
+</tr>
+<tr>
+<td>选择(下拉框)</td>
+<td>form</td>
+<td><code>{"action":"form","field":{...},"select":"..."}</code></td>
+</tr>
+<tr>
+<td>随机选</td>
+<td>select</td>
+<td><code>{"action":"select","selection_strategy":{"type":"random"}}</code></td>
+</tr>
+<tr>
+<td>勾选</td>
+<td>form</td>
+<td><code>{"action":"form","field":{...},"check":"true"}</code></td>
+</tr>
+<tr>
+<td>滚动</td>
+<td>scroll</td>
+<td><code>{"action":"scroll","min":100,"max":500}</code></td>
+</tr>
+<tr>
+<td>拖动(滚动条)</td>
+<td>eval</td>
+<td><code>{"action":"eval","script":"..."}</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>可用 action：wait / click / form / select / scroll / eval / delay / goto / report</strong></p>
+<h2>关键规则</h2>
+<h3>1. 推荐线性模式</h3>
+<p><strong>状态机（when_）虽然省字数，但 LLM 翻译不够稳定。推荐用编号步骤明确写出每一步。</strong></p>
+<p>quiz 示例 — 推荐写法：</p>
+<pre><code>操作:
+1. 等待2-4秒
+2. 点击Accept &amp; Continue（可选）
+3. 等待1秒
+4. 随机选一个选项（第1题）
+5. 等待0.5秒
+6. 随机选一个选项（第2题）
+7. 等待0.5秒
+8. 随机选一个选项（第3题）
+...
+15. 填写First Name（输入框id=fn）
+16. 点击Next按钮
+17. 填写Email Address（输入框id=em）
+18. 点击Next按钮
+</code></pre>
+<p>每个 quiz 题目写一个"随机选一个选项 + 短等待"即可。如果有 N 道题就写 N 个。</p>
+<h3>2. 表单填完后加短等待</h3>
+<p>表单字段填完后建议加 0.5-1 秒等待，让页面 JS 验证有时间处理输入，否则点 Next 可能拿不到值：</p>
+<pre><code>13. 填写姓名（placeholder=Enter your first name）
+14. 等待0.5秒
+15. 点击Next按钮
+</code></pre>
+<h3>3. 表单字段可加 id/placeholder 提示</h3>
+<p>引擎通过 label 文字、id、name、placeholder、type 等多种方式定位元素。如果知道输入框的 id，写上可以提升准确率：</p>
+<pre><code>填写邮箱（输入框id=email）
+填写密码（输入框id=password）
+</code></pre>
+<h3>3. 可选步骤</h3>
+<p>某些步骤（如 cookie 弹窗）可能不出现，加"（可选）"：</p>
+<pre><code>点击Accept all（可选）
+</code></pre>
+<hr />
+<h2>成功条件</h2>
+<pre><code>成功: URL包含 /success
+成功: 页面出现 注册成功
+成功: URL包含 /welcome 或 页面出现 Welcome back
+</code></pre>
+<p>支持多个条件（任一满足即成功）。</p>
+<hr />
+<h2>如果表单在 iframe 里</h2>
+<pre><code>填写邮箱（在 iframe 里，URL 包含 &quot;forms.example.com&quot;）
+</code></pre>
+<p>运营只需要写 iframe URL 关键词，引擎自动定位。</p>
+<hr />
+<h2>填什么值</h2>
+<table>
+<thead>
+<tr>
+<th>写什么</th>
+<th>自动换成</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>填邮箱</td>
+<td>{{random.email}}</td>
+</tr>
+<tr>
+<td>填姓名</td>
+<td>{{random.name}}</td>
+</tr>
+<tr>
+<td>填密码</td>
+<td>{{random.password}}</td>
+</tr>
+<tr>
+<td>填手机号</td>
+<td>{{random.phone}}</td>
+</tr>
+<tr>
+<td>填生日</td>
+<td>{{random.dob}}（MM/DD/YYYY）</td>
+</tr>
+<tr>
+<td>填出生月</td>
+<td>{{random.dob_month}}</td>
+</tr>
+<tr>
+<td>填出生日</td>
+<td>{{random.dob_day}}</td>
+</tr>
+<tr>
+<td>填出生年</td>
+<td>{{random.dob_year}}</td>
+</tr>
+<tr>
+<td>填SSN</td>
+<td>{{random.ssn}}（9位数字）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>示例</h2>
+<h3>订阅表单（线性）</h3>
+<pre><code>页面URL: https://auxx-lift.com/products/auxx-lift
+类型: newsletter
+成功: URL包含 customer_posted=true
+
+操作:
+1. 等待2-4秒
+2. 滚动到底部
+3. 填邮箱
+4. 点击Subscribe
+5. 等待5-8秒
+</code></pre>
+<h3>多页注册（线性）</h3>
+<pre><code>页面URL: https://free.spree.com/maxbonus/
+类型: casino
+成功: URL包含 /welcome
+
+操作:
+1. 等待2-4秒
+2. 点击Continue
+3. 等待5-10秒
+4. 填邮箱
+5. 填密码
+6. 勾选服务条款
+7. 点击Create Free Account
+8. 等待5-8秒
+</code></pre>
+<h3>quiz 问答（推荐用线性）</h3>
+<pre><code>页面URL: https://juliettdate.com/land/sp/xxx/
+类型: dating
+成功: URL包含 /news-feed
+
+操作:
+1. 等待2-4秒
+2. 点击Accept all（可选）
+3. 点击Let me see it
+4. 等待2秒
+5. 随机选一个选项（第1题）
+6. 等待0.5秒
+7. 随机选一个选项（第2题）
+8. 等待0.5秒
+9. 随机选一个选项（第3题）
+10. 等待0.5秒
+11. 随机选一个选项（第4题）
+12. 等待0.5秒
+13. 随机选一个选项（第5题）
+14. 等待0.5秒
+15. 随机选一个选项（第6题）
+16. 等待0.5秒
+17. 随机选一个选项（第7题）
+18. 等待0.5秒
+19. 随机选一个选项（第8题）
+20. 等待1秒
+21. 填姓名
+22. 点击Next
+23. 填邮箱
+24. 点击Next
+25. 填密码
+26. 点击Next
+27. 点击I Accept
+28. 点击Explore now
+</code></pre>
+<h3>iframe 表单（状态机）</h3>
+<pre><code>页面URL: https://entyrecare.com/caregiving/ohio/
+类型: senior_survey
+loop_until: URL包含 /verify
+
+操作:
+1. 等待2-4秒
+2. 点击Check Eligibility
+3. 等待5-8秒
+
+when_页面有选项: 随机选一个选项
+when_页面有Next按钮: 点击Next
+when_页面有姓名输入框（在iframe里，URL含forms.entyrecare）: 填姓名
+when_页面有邮箱输入框（在iframe里，URL含forms.entyrecare）: 填邮箱
+</code></pre>
+<hr />
+<h2>要点</h2>
+<ul>
+<li><strong>推荐线性模式</strong> — 编号步骤比状态机更稳定</li>
+<li><strong>不写 selector</strong> — 引擎自动找</li>
+<li><strong>可加 id 提示</strong> — "输入框id=xxx" 提升定位精度</li>
+<li><strong>quiz 每题一个步骤</strong> — "随机选一个选项（第N题）"</li>
+<li><strong>iframe 写 URL 关键词</strong> — "在 iframe 里，URL 包含 xxx"</li>
+<li><strong>等待写范围</strong> — "5-10秒"</li>
+<li><strong>可选步骤加标记</strong> — "（可选）"</li>
+</ul>
+</body></html>
