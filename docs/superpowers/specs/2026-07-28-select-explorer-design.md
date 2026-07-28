@@ -214,3 +214,66 @@ def _classify_select_intent(step, probe) -> str:
 - 不给 LLM 生成 selector
 - 不依赖组件库类名做核心逻辑
 - 旧 select 分支只在 feature flag 下保留，Explorer 失败不回退
+
+---
+
+## Phase 1 MV 验证结论
+
+三个页面 10/10 通过，证明了架构假设而非仅修通组件：
+
+```
+ant-design: 无 ARIA，div hidden→visible          10/10
+react-select: 隐藏 input anchor，trigger 在父级    10/10
+mui-select:   标准 ARIA combobox + hidden input   10/10
+```
+
+核心代码零组件库类名，同一条 before/after 可见性探索链路覆盖三种形态。
+
+## 后续架构边界
+
+### 共享核心（所有 Strategy 复用）
+
+```
+├─ label/区域定位         ← FieldLocator 现有能力
+├─ ProbeSession           ← 唯一 marker 注入与清理
+├─ before/after 状态采集   ← snapshot_visible_text_nodes
+├─ 真实 CDP 交互          ← cdp.click，非 element.click()
+├─ trace、超时和清理       ← 每次探索可审计
+└─ InteractionOutcome     ← 统一结果类型
+```
+
+### 独立 Strategy（每种交互形态各一个）
+
+```
+├─ NativeSelectStrategy      原生 <select>
+├─ PopupChoiceStrategy       需要先展开的下拉框（Ant/React/MUI）
+├─ VisibleChoiceStrategy     radio / button 卡片 / div 芯片 / 图片卡
+├─ MultiChoiceStrategy       checkbox、多选 chip
+├─ RatingStrategy            星级或数字评分
+```
+
+每个 Strategy 自决：
+- 如何识别这种交互形态（DOM 探针）
+- 候选如何评分（trigger scoring）
+- 应该点击谁（anchor → trigger discovery）
+- 目标选项如何匹配（text exact / value / data-attr）
+- 什么状态变化才算成功（VerificationContract）
+
+### VerificationContract（共享验证框架，不共享写死条件）
+
+```
+select:    value 或 trigger 文本变化
+radio:     checked / aria-checked
+图片卡:    隐藏 input、选中 class 或页面进入下一步
+rating:    评分值、aria-valuenow 或对应项选中
+checkbox:  checked + 数量 ≥ 最低要求
+```
+
+核心只负责采集证据和执行验证，成功条件由 Strategy 定义。
+
+### 不做什么
+
+- 不让 _smart_form 长成新的巨型类
+- 不给 LLM 生成 selector 或组件库类名
+- 不把"点击没报错"当成功
+- 不在核心放 `ant-`、`Mui`、`react-select`、`css-select__`
