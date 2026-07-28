@@ -1074,8 +1074,39 @@ class JSONExecutor:
                 self.cdp.form(selector, select=select, frame_id=frame_id)
                 return True
             else:
-                # Custom select (MUI, React-Select, etc.): try CDP natively first —
-                # cdp.form handles custom selects (click control → open menu → click option).
+                # Ant Design / custom select: click trigger, find option, click, verify
+                esc_val = select.replace("'", "\\'")
+                ant_js = (
+                    f"(function(){{var root=document.querySelector('{esc}');if(!root)return'no root';"
+                    f"var trigger=root.matches('.ant-select-selector')?root:root.querySelector('.ant-select-selector');"
+                    f"if(!trigger)trigger=root;trigger.click();"
+                    f"var t0=Date.now();var found=null;"
+                    f"function scan(){{"
+                    f"var opts=document.querySelectorAll('.ant-select-item,.ant-select-item-option,[role=option],[class*=select__option]');"
+                    f"for(var i=0;i<opts.length;i++){{if(opts[i].textContent.trim().indexOf('{esc_val}')!==-1&&opts[i].offsetWidth>0){{found=opts[i];return true;}}}}"
+                    f"return false;}}"
+                    f"if(scan()){{found.click();return'clicked';}}"
+                    f"var iv=setInterval(function(){{if(scan()||Date.now()-t0>2000){{clearInterval(iv);if(found){{found.click();setTimeout(function(){{return'clicked';}},100);}}}}}},100);"
+                    f"setTimeout(function(){{clearInterval(iv);if(found)found&&found.click();return found?'clicked':'not found';}},1500);}})()"
+                )
+                result = self.cdp.eval(ant_js, frame_id)
+                if "clicked" in str(result):
+                    time.sleep(0.3)
+                    # Verify selection: check if display text or hidden input matches
+                    verify_js = (
+                        f"(function(){{var root=document.querySelector('{esc}');if(!root)return'no root';"
+                        f"var formItem=root.closest('[class*=form-item],.ant-form-item,fieldset');"
+                        f"var display=formItem?formItem.querySelector('[class*=selection-item],[class*=select-selection],[class*=display],[id*=display]'):null;"
+                        f"if(display)return display.textContent.trim();"
+                        f"var sel=formItem?formItem.querySelector('input[type=hidden]'):null;"
+                        f"return sel?sel.value:'no display';}})()"
+                    )
+                    verify = self.cdp.eval(verify_js, frame_id)
+                    self.log.info(f"[JSON] smart_form: ant select '{select}' → verify: {str(verify).strip()}")
+                    if str(verify).strip() == select:
+                        return True
+
+                # Fall through: try CDP natively
                 result = self.cdp.form(selector, select=select, frame_id=frame_id)
                 if 'Error' not in result and 'error' not in result.lower():
                     self.log.info(f"[JSON] smart_form: cdp.form custom select OK")

@@ -259,6 +259,10 @@ class FieldLocator:
         for r in self._candidates_adjacent_text(field, frame_id, container):
             candidates.append(r)
 
+        # Strategy 6: custom select (Ant Design, React Select) — label → form-item → trigger
+        for r in self._candidates_custom_select(field, frame_id, container):
+            candidates.append(r)
+
         return candidates
 
     def _candidates_exact_attrs(self, field, frame_id, container) -> List[dict]:
@@ -270,9 +274,7 @@ class FieldLocator:
         esc = name.replace('"', '\\"')
         for attr in ['id', 'name', 'aria-label', 'data-testid']:
             js = (
-                f"(function(){{var base='input[{attr}*=\"{esc}\" i],select[{attr}*=\"{esc}\" i],textarea[{attr}*=\"{esc}\" i]';"
-                f"if('{attr}'==='id')base+=',div[id*=\"{esc}\" i]';"
-                f"var els=document.querySelectorAll(base);"
+                f"(function(){{var r=[];var els=document.querySelectorAll('input[{attr}*=\"{esc}\" i],select[{attr}*=\"{esc}\" i],textarea[{attr}*=\"{esc}\" i]');"
                 f"for(var i=0;i<els.length;i++){{if((els[i].tagName!=='INPUT'||els[i].tabIndex!==-1)&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))r.push(i);}}"
                 f"return JSON.stringify(r);}})()"
             )
@@ -472,6 +474,28 @@ class FieldLocator:
                      'confidence': conf_map.get(r['src'], 0.6)} for r in results]
         except:
             return []
+
+    def _candidates_custom_select(self, field, frame_id, container) -> List[dict]:
+        """Find custom select triggers (Ant Design, React Select) by label→form-item→trigger."""
+        label = field.get("label", "")
+        if not label: return []
+        esc = label.replace("'", "\\'")
+        js = (
+            f"(function(){{"
+            f"var labels=document.querySelectorAll('label');"
+            f"for(var i=0;i<labels.length;i++){{"
+            f"if(labels[i].textContent.trim().toLowerCase().indexOf('{esc.lower()}')!==-1&&labels[i].offsetWidth>0){{"
+            f"var item=labels[i].closest('.ant-form-item,[class*=form-item],fieldset');"
+            f"if(!item)item=labels[i].parentElement;"
+            f"var trigger=item.querySelector('.ant-select-selector,[role=combobox],select,[class*=select__control]');"
+            f"if(trigger&&trigger.offsetWidth>0){{trigger.setAttribute('data-custom-trigger','1');return'trigger';}}"
+            f"}}}}"
+            f"return'none';}})()"
+        )
+        raw = self.cdp.eval(js, frame_id)
+        if "trigger" in str(raw):
+            return [{'selector': '[data-custom-trigger="1"]', 'strategy': 'custom_select', 'confidence': 0.9}]
+        return []
 
     def _list_iframes(self) -> List[str]:
         """Return list of frame IDs for all iframes on the page."""
