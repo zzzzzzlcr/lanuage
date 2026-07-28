@@ -458,6 +458,7 @@ class JSONExecutor:
                       'Previous','Back','Skip','Reset','Clear All']
 
         if stype == "random":
+            token = f"qs{int(time.time()*1000)%100000}"  # unique per call, prevents Q1→Q2 pollution
             # Auto-detect quiz scope: search for active question container with radio/checkbox
             container = step.get("container", "")
             if not container:
@@ -476,23 +477,39 @@ class JSONExecutor:
                     container = '[data-quiz-scope="1"]'
 
             if container:
-                # Scoped label search for quiz options
+                # Scoped label search with unique token + post-click verification
                 scope_expr = f"document.querySelector('{container}')"
                 js = (
-                    f"(function(){{var scope={scope_expr};if(!scope)return'no-scope';"
+                    f"(function(){{"
+                    # Clean ALL old markers first
+                    f"document.querySelectorAll('[data-sel],[data-quiz-token]').forEach(function(e){{e.removeAttribute('data-sel');e.removeAttribute('data-quiz-token');}});"
+                    f"var scope={scope_expr};if(!scope)return'no-scope';"
                     f"var labels=Array.from(scope.querySelectorAll('label')).filter(function(l){{"
                     f"var inp=l.querySelector('input[type=checkbox],input[type=radio]');"
                     f"return inp&&!inp.disabled&&l.offsetWidth>0;}});"
                     f"if(!labels.length)return'none';"
                     f"var label=labels[Math.floor(Math.random()*labels.length)];"
-                    f"label.setAttribute('data-sel','1');return'picked';}})()"
+                    f"var inp=label.querySelector('input[type=checkbox],input[type=radio]');"
+                    f"label.setAttribute('data-sel','{token}');"
+                    f"return JSON.stringify({{picked:true,token:'{token}',label:label.textContent.trim().substring(0,30)}});}})()"
                 )
                 result = self.cdp.eval(js, self._frame_id)
-                if "picked" in str(result):
-                    self.cdp.click('[data-sel=\"1\"]', self._frame_id)
-                    time.sleep(0.2)
-                    self.log.info(f"[JSON] quiz auto-scope select: {str(result).strip()}")
-                    return True
+                result_str = str(result)
+                if "picked" in result_str:
+                    sel = f'[data-sel=\"{token}\"]'
+                    # Use CDP click limited to the quiz scope
+                    scope_css = container
+                    scoped_sel = f'{scope_css} {sel}'
+                    self.cdp.click(scoped_sel, self._frame_id)
+                    time.sleep(0.3)
+                    # Verify checkbox/radio is now checked
+                    verify = self.cdp.eval(
+                        f"(function(){{var e=document.querySelector('{sel}');"
+                        f"if(!e)return'no elem';var inp=e.querySelector('input[type=checkbox],input[type=radio]');"
+                        f"return inp&&inp.checked?'checked':'not checked';}})()",
+                        self._frame_id)
+                    self.log.info(f"[JSON] quiz scoped select: {result_str[:80]} verify: {str(verify).strip()}")
+                    return "checked" in str(verify)
 
             # control_types mode: scoped search within quiz container
             ctl_types = step.get("control_types", [])
@@ -506,22 +523,33 @@ class JSONExecutor:
                     f"return inp&&!inp.disabled&&l.offsetWidth>0;}});"
                     f"if(!labels.length)return'none';"
                     f"var label=labels[Math.floor(Math.random()*labels.length)];"
-                    f"label.setAttribute('data-sel','1');"
-                    f"return'picked';}})()"
+                    f"var inp=label.querySelector('input[type=checkbox],input[type=radio]');"
+                    f"label.setAttribute('data-sel','{token}');"
+                    f"return JSON.stringify({{picked:true,token:'{token}',label:label.textContent.trim().substring(0,30)}});}})()"
                 )
                 result = self.cdp.eval(js, self._frame_id)
-                if "picked" in str(result):
-                    self.cdp.click('[data-sel=\"1\"]', self._frame_id)
+                result_str = str(result)
+                if "picked" in result_str:
+                    self.cdp.click(f'[data-sel=\"{token}\"]', self._frame_id)
                     time.sleep(0.2)
-                self.log.info(f"[JSON] quiz select: {str(result).strip()}")
-                return True  # CDP click dispatched — the checkbox/radio is selected
+                    # Verify checked
+                    verify = self.cdp.eval(
+                        f"(function(){{var e=document.querySelector('[data-sel=\"{token}\"]');"
+                        f"if(!e)return'no elem';var inp=e.querySelector('input[type=checkbox],input[type=radio]');"
+                        f"return inp&&inp.checked?'checked':'not checked';}})()",
+                        self._frame_id)
+                    self.log.info(f"[JSON] quiz select: {result_str[:80]} verify: {str(verify).strip()}")
+                    return "checked" in str(verify)
 
             # Clean up any leftover markers from previous calls
             self.cdp.eval(
                 "(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()",
                 self._frame_id)
-            # Randomly click any visible option-like element
-            # Scope to container if specified, otherwise filter nav/CTA by position
+            # Global random: cleanup old markers, use unique token
+            self.cdp.eval(
+                "(function(){document.querySelectorAll('[data-sel]').forEach(function(e){e.removeAttribute('data-sel');});})()",
+                self._frame_id)
+            # Scope to container if specified
             container = step.get("container", "")
             scope = container if container else "document"
             # Prefer labels/divs over buttons (buttons are usually CTAs, not options)
@@ -543,16 +571,22 @@ class JSONExecutor:
                 f"if(!bad)r.push(i);}}"
                 f"if(r.length>0){{"
                 f"var pick=r[Math.floor(Math.random()*r.length)];"
-                f"els[pick].setAttribute('data-sel','1');"
-                f"return'clicked '+(r.length)+' opts';}}"
+                f"els[pick].setAttribute('data-sel','{token}');"
+                f"return'clicked_{token} '+(r.length)+' opts';}}"
                 f"return'none';"
             )
             result = self.cdp.eval(f"(function(){{{js}}})()", self._frame_id)
             if "clicked" in result:
-                # CDP real click for reliable event delivery
-                self.cdp.click('[data-sel=\"1\"]', self._frame_id)
+                # Extract unique token from result "clicked_qs12345 5 opts"
+                parts = result.split("_")
+                if len(parts) > 1:
+                    token = parts[1].split(" ")[0]
+                    sel = f'[data-sel=\"{token}\"]'
+                else:
+                    sel = '[data-sel]'
+                self.cdp.click(sel, self._frame_id)
                 time.sleep(0.2)
-                self.cdp.eval("(function(){var e=document.querySelector('[data-sel]');if(e)e.removeAttribute('data-sel');})()", self._frame_id)
+                self.cdp.eval("(function(){document.querySelectorAll('[data-sel]').forEach(function(e){e.removeAttribute('data-sel');});})()", self._frame_id)
                 return True
             return False
 

@@ -115,6 +115,8 @@ class FieldLocator:
         if not all_candidates:
             raise LocatorError(field, [{'strategy': 'all', 'error': 'No candidates found'}])
 
+        self.log.debug(f"[Locator] {len(all_candidates)} raw candidates for '{field.get('label','')}': {[(c['strategy'],c['confidence']) for c in all_candidates]}")
+
         # Filter: discard candidates with invalid/broken selectors
         valid = []
         for c in all_candidates:
@@ -128,7 +130,7 @@ class FieldLocator:
             if self._visible(sel, frame_id):
                 valid.append(c)
             else:
-                self.log.debug(f"[Locator] Discarding invisible: {sel}")
+                self.log.warning(f"[Locator] Discarding invisible: {sel}")
 
         if not valid:
             raise LocatorError(field, [{'strategy': 'all', 'error': f'No valid candidates from {len(all_candidates)} raw candidates'}])
@@ -268,9 +270,10 @@ class FieldLocator:
         esc = name.replace('"', '\\"')
         for attr in ['id', 'name', 'aria-label', 'data-testid']:
             js = (
-                f"(function(){{var r=[];var els=document.querySelectorAll('input[{attr}*=\"{esc}\" i],"
-                f"select[{attr}*=\"{esc}\" i],textarea[{attr}*=\"{esc}\" i]');"
-                f"for(var i=0;i<els.length;i++){{if(els[i].tabIndex!==-1&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))r.push(i);}}"
+                f"(function(){{var base='input[{attr}*=\"{esc}\" i],select[{attr}*=\"{esc}\" i],textarea[{attr}*=\"{esc}\" i]';"
+                f"if('{attr}'==='id')base+=',div[id*=\"{esc}\" i]';"
+                f"var els=document.querySelectorAll(base);"
+                f"for(var i=0;i<els.length;i++){{if((els[i].tagName!=='INPUT'||els[i].tabIndex!==-1)&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))r.push(i);}}"
                 f"return JSON.stringify(r);}})()"
             )
             raw = self.cdp.eval(js, frame_id)
@@ -279,10 +282,15 @@ class FieldLocator:
                 if isinstance(parsed, str):
                     parsed = json.loads(parsed)
                 indices = parsed
-                for idx in indices:
-                    selector = f'[{attr}*="{esc}" i]:nth-of-type({idx+1})' if len(indices) > 1 else f'[{attr}*="{esc}" i]'
-                    results.append({'selector': selector, 'strategy': attr,
-                                    'confidence': 1.0 if attr == 'name' else 0.85})
+                if attr == 'id':
+                    # ID should be unique — use bare selector, nth-of-type is meaningless for mixed tags
+                    selector = f'[{attr}*="{esc}" i]'
+                    results.append({'selector': selector, 'strategy': attr, 'confidence': 0.85})
+                else:
+                    for idx in indices:
+                        selector = f'[{attr}*="{esc}" i]:nth-of-type({idx+1})' if len(indices) > 1 else f'[{attr}*="{esc}" i]'
+                        results.append({'selector': selector, 'strategy': attr,
+                                        'confidence': 1.0 if attr == 'name' else 0.85})
             except: pass
         return results
 
