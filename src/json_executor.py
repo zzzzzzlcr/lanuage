@@ -6,6 +6,113 @@ import logging
 from variable_resolver import VariableResolver
 from element_finder import ElementFinder
 from locator import FieldLocator, LocatorError
+from select_explorer import (
+    SelectIntent, SelectOutcome, StrategyProbe,
+    RadioStrategy, MarkerSession,
+)
+from enum import Enum
+
+
+class ChoiceResult(Enum):
+    HANDLED = "handled"
+    DEFER_LEGACY = "defer_legacy"
+    AMBIGUOUS = "ambiguous"
+    INVALID = "invalid"
+    UNSUPPORTED = "unsupported"
+
+
+def normalize_choice_request(step: dict):
+    """Convert step dict to (NormalizedChoice | None).
+
+    Returns (origin, intent, original_step) tuple.
+    origin: "canonical" | "legacy"
+    Returns None if not a choice step.
+    """
+    action = step.get("action", "")
+    if action == "select_option":
+        opt = step.get("option")
+        if not isinstance(opt, dict):
+            return None
+        field = step.get("field")
+        if field is not None and not isinstance(field, dict):
+            return None
+        mode = opt.get("mode", "")
+        if mode not in ("exact", "random"):
+            return None
+        text = opt.get("text")
+        if mode == "exact":
+            if not isinstance(text, str) or not text.strip():
+                return None
+        elif mode == "random":
+            if "text" in opt:
+                return None
+        return ("canonical", SelectIntent(
+            label=(field or {}).get("label", "") if field else "",
+            mode=mode,
+            option=text if mode == "exact" else None,
+        ), None)
+
+    elif action == "form" and "select" in step:
+        sel = step["select"]
+        label = step.get("field", {}).get("label", "")
+        if sel == "__random__":
+            return ("legacy", SelectIntent(label=label, mode="random", option=None), step)
+        else:
+            return ("legacy", SelectIntent(label=label, mode="exact", option=sel), step)
+
+    elif action == "select":
+        strategy_type = step.get("selection_strategy", {}).get("type", "")
+        if strategy_type == "random":
+            if step.get("container") or step.get("control_types"):
+                return None  # quiz/Q2 legacy — skip ChoiceExplorer
+            return ("legacy", SelectIntent(label="", mode="random", option=None), step)
+        return None  # first/match_text — never probe
+
+    return None
+
+
+class ChoiceExplorer:
+    """Probe → arbitrate → dispatch. Only arbitrates; never executes legacy."""
+
+    @staticmethod
+    def execute(origin: str, intent: SelectIntent, original_step: dict | None,
+                ctx: dict) -> tuple:
+        """Returns (ChoiceResult, SelectOutcome | None)."""
+        # 1. Validate
+        if intent.mode == "exact":
+            if not isinstance(intent.option, str) or not intent.option.strip():
+                return (ChoiceResult.INVALID,
+                        SelectOutcome("INVALID_INTENT", evidence={"reason": "exact requires non-empty text"}))
+        elif intent.mode == "random":
+            if intent.option is not None:
+                return (ChoiceResult.INVALID,
+                        SelectOutcome("INVALID_INTENT", evidence={"reason": "random must not carry text"}))
+        else:
+            return (ChoiceResult.INVALID,
+                    SelectOutcome("INVALID_INTENT", evidence={"reason": f"unknown mode: {intent.mode}"}))
+
+        # 2. Collect probes
+        radio_probe = RadioStrategy.probe(intent, ctx)
+
+        # 3. Arbitrate
+        if radio_probe is None:
+            if origin == "canonical":
+                return (ChoiceResult.UNSUPPORTED,
+                        SelectOutcome("UNSUPPORTED_CONTROL"))
+            else:
+                return (ChoiceResult.DEFER_LEGACY, None)
+
+        # Check conflicting controls
+        for group in radio_probe.candidates:
+            if group.conflicting_control_types:
+                return (ChoiceResult.AMBIGUOUS,
+                        SelectOutcome("AMBIGUOUS_CONTROL",
+                                      evidence={"conflicting_controls": group.conflicting_control_types,
+                                                "scope": group.scope_selector}))
+
+        # 4. Execute
+        outcome = RadioStrategy.execute(intent, radio_probe, ctx)
+        return (ChoiceResult.HANDLED, outcome)
 
 
 class JSONExecutor:
@@ -503,13 +610,21 @@ class JSONExecutor:
                     self.cdp.click(scoped_sel, self._frame_id)
                     time.sleep(0.3)
                     # Verify checkbox/radio is now checked
-                    verify = self.cdp.eval(
+                    verify_raw = self.cdp.eval(
                         f"(function(){{var e=document.querySelector('{sel}');"
-                        f"if(!e)return'no elem';var inp=e.querySelector('input[type=checkbox],input[type=radio]');"
-                        f"return inp&&inp.checked?'checked':'not checked';}})()",
+                        f"if(!e)return JSON.stringify({{checked:false,error:'no elem'}});"
+                        f"var inp=e.querySelector('input[type=checkbox],input[type=radio]');"
+                        f"return JSON.stringify({{checked:!!(inp&&inp.checked)}});}})()",
                         self._frame_id)
-                    self.log.info(f"[JSON] quiz scoped select: {result_str[:80]} verify: {str(verify).strip()}")
-                    return "checked" in str(verify)
+                    try:
+                        verify_data = json.loads(verify_raw) if isinstance(verify_raw, str) else verify_raw
+                        if isinstance(verify_data, str):
+                            verify_data = json.loads(verify_data)
+                        is_checked = verify_data.get("checked", False)
+                    except Exception:
+                        is_checked = False
+                    self.log.info(f"[JSON] quiz scoped select: {result_str[:80]} verify: checked={is_checked}")
+                    return is_checked
 
             # control_types mode: scoped search within quiz container
             ctl_types = step.get("control_types", [])
@@ -533,13 +648,21 @@ class JSONExecutor:
                     self.cdp.click(f'[data-sel=\"{token}\"]', self._frame_id)
                     time.sleep(0.2)
                     # Verify checked
-                    verify = self.cdp.eval(
+                    verify_raw = self.cdp.eval(
                         f"(function(){{var e=document.querySelector('[data-sel=\"{token}\"]');"
-                        f"if(!e)return'no elem';var inp=e.querySelector('input[type=checkbox],input[type=radio]');"
-                        f"return inp&&inp.checked?'checked':'not checked';}})()",
+                        f"if(!e)return JSON.stringify({{checked:false,error:'no elem'}});"
+                        f"var inp=e.querySelector('input[type=checkbox],input[type=radio]');"
+                        f"return JSON.stringify({{checked:!!(inp&&inp.checked)}});}})()",
                         self._frame_id)
-                    self.log.info(f"[JSON] quiz select: {result_str[:80]} verify: {str(verify).strip()}")
-                    return "checked" in str(verify)
+                    try:
+                        verify_data = json.loads(verify_raw) if isinstance(verify_raw, str) else verify_raw
+                        if isinstance(verify_data, str):
+                            verify_data = json.loads(verify_data)
+                        is_checked = verify_data.get("checked", False)
+                    except Exception:
+                        is_checked = False
+                    self.log.info(f"[JSON] quiz select: {result_str[:80]} verify: checked={is_checked}")
+                    return is_checked
 
             # Clean up any leftover markers from previous calls
             self.cdp.eval(
@@ -660,6 +783,34 @@ class JSONExecutor:
 
         for attempt in range(retry):
             try:
+                # === select_option routing (before FieldLocator!) ===
+                choice_req = normalize_choice_request(step)
+                if choice_req is not None:
+                    origin, intent, original_step = choice_req
+                    ctx = {
+                        "cdp": self.cdp, "locator": self.locator,
+                        "frame_id": self._frame_id, "log": self.log,
+                        "marker_session": MarkerSession(self.cdp),
+                    }
+                    result, outcome = ChoiceExplorer.execute(origin, intent, original_step, ctx)
+                    if result == ChoiceResult.HANDLED:
+                        return outcome.ok
+                    elif result == ChoiceResult.UNSUPPORTED:
+                        self.log.warning(f"[JSON] select_option unsupported: {step.get('field',{}).get('label','')}")
+                        if optional:
+                            return True
+                        return False
+                    elif result == ChoiceResult.INVALID:
+                        self.log.warning(f"[JSON] select_option invalid intent")
+                        if optional:
+                            return True
+                        return False
+                    elif result == ChoiceResult.AMBIGUOUS:
+                        self.log.warning(f"[JSON] select_option ambiguous: {outcome.status if outcome else '?'}")
+                        return False  # fail closed, never fallback
+                    elif result == ChoiceResult.DEFER_LEGACY:
+                        pass  # continue to legacy handler below
+
                 if action in ("wait", "delay"):
                     # delay uses "time" in ms, wait uses min/max in seconds
                     if "time" in step:

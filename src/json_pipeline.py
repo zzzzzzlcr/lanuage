@@ -63,7 +63,7 @@ class JSONPipeline:
 **只有运营明确写"when_XXX"或"loop_until"时才用状态机。**
 **运营明确写了具体选择值（如"选择Single Male"）→ 必须用那个精确值，不准改成 __random__！**
 **如果提示里有"当前页面可见元素"，field.label 必须从里面的文字摘取，不准自己翻译！**
-**radio/按钮/选项类选择，直接用 click + find.text，不要用 form + select！**
+**radio/按钮/选项类选择题，生成 select_option 语义动作（见下方 select_option 章节），不要用 click + find.text！**
 **例: "选择Single Male" → {"action":"click","find":{"text":"Single Male"}}**
 **例: "选择$30k-$60k" → {"action":"click","find":{"text":"$30k-$60k"}}**
 **只有真正的 <select> 下拉框才用 form + select。**
@@ -83,7 +83,7 @@ class JSONPipeline:
 | 勾选 XXX | form | {"action":"form","field":{"label":"XXX","type":"checkbox"},"check":"true"} |
 | 滚动 | scroll | {"action":"scroll","min":100,"max":500} |
 | 拖动XXX（滚动条） | eval | {"action":"eval","script":"var sl=document.querySelector('input[type=range]');..."} |
-**可用 action：wait, click, form, select, scroll, eval, delay, goto, report**
+**可用 action：wait, click, form, select_option, select, scroll, eval, delay, goto, report**
 **重要: field.label 和 find.text 必须用英文！页面上都是英文字，不要用中文描述里的词。**
 **例: 运营写"填邮箱"→label:"email"; 运营写"点击提交"→find:{"text":"Submit"}**
 
@@ -102,13 +102,39 @@ class JSONPipeline:
 - type推断: email→email, phone/手机→tel, password/密码→password, name/姓名→text
 - 运营描述里有"输入框id=xxx"或"id=xxx"时，必须用find.id方式，不要用field.label
 
-### 3. 滚动条/滑块 (range)
+### 3. 单选题选择 (select_option)
+
+当运营写"选择问题 XXX(选YYY)"（明确的单选题）时, 生成:
+{
+  "action": "select_option",
+  "field": {"label": "问题文字"},
+  "option": {"mode": "exact", "text": "选项文字"}
+}
+
+随机选择:
+{
+  "action": "select_option",
+  "field": {"label": "问题文字"},
+  "option": {"mode": "random"}
+}
+
+规则:
+- field.label 和 option.text 来源优先级:
+  1. "选择组"快照中对应组/选项的原文（首选）
+  2. 运营描述中明确的原文（后续页尚未出现在快照中时）
+  3. field={}（两步都不适用时）
+  始终禁止翻译、改写、补充或修改标点/货币符号/数值范围
+- 没有可靠问题文字时 "field":{}
+- select_option 支持: radio group（单选按钮组）
+- 不支持: checkbox、卡片选择、星级评分、下拉框（这些继续用 form+check / form+select）
+
+### 4. 滚动条/滑块 (range)
 运营说"拖动XXX到YYY"或"选择XXX（滚动条）"时:
 - 用eval直接设值+触发事件:
   {"action":"eval","script":"var sl=document.querySelector('input[type=range]');if(sl){sl.value=50000;sl.dispatchEvent(new Event('input',{bubbles:true}));sl.dispatchEvent(new Event('change',{bubbles:true}));}"}
 - 数值从运营描述中取，如果运营写"债务金额"或"选择金额"，默认拖到较大值如50000
 
-### 4. 下拉框选择 (select)
+### 5. 下拉框选择 (select)
 **关键规则: 运营明确写的选择值必须原样使用，绝对不允许将其替换为__random__！**
 **"选择Single Male" → select:"Single Male"，不是 select:"__random__"**
 **"选择$30k-$60k" → select:"$30k-$60k"，不是 select:"__random__"**
@@ -122,7 +148,7 @@ class JSONPipeline:
 - 如果运营写"选择Birth Month(选随机)"→ "select":"__random__"
 - 如果运营写"选择问题 <问题文字>"→ field.label 直接用<问题文字>原文。例:"选择问题 What Is Your Date of Birth?(选随机)"→ {"field":{"label":"What Is Your Date of Birth?"},"select":"__random__"}
 
-### 5. quiz随机选项
+### 6. quiz随机选项
 {"action":"select","selection_strategy":{"type":"random"}}
 
 ### 6. 状态机模式 (运营用when_XXX格式)
@@ -513,8 +539,11 @@ when规则:
 
         # 3. For state machine, ensure select/random step exists
         if config.get("loop_until"):
-            has_select = any(s.get("action") == "select" for s in config.get("steps", []))
-            if not has_select:
+            has_choice = any(
+                s.get("action") in {"select", "select_option"}
+                for s in config.get("steps", [])
+            )
+            if not has_choice:
                 config.setdefault("steps", []).insert(0, {
                     "when": {}, "action": "select",
                     "selection_strategy": {"type": "random"}
@@ -679,6 +708,75 @@ when规则:
             'total_elements': len(elements),
         }
 
+    def _diagnose_choice_groups(self) -> list:
+        """Scan page for radio groups with accessible labels and options.
+        Handles CTM-like DOM: question title is plain <label> without 'for',
+        inside .form-section — not <legend> or label[for]."""
+        js = """(function(){
+          var groups = [];
+          var seen = {};
+
+          var radios = document.querySelectorAll('input[type=radio]');
+          radios.forEach(function(r){
+            if (r.disabled || r.closest('[aria-hidden=true]')) return;
+            var form = r.closest('form');
+            var ownerId = form ? (form.id || form.getAttribute('data-form-id') || '') : '';
+            var key = ownerId + '::' + (r.name || '');
+            if (!key || seen[key]) return;
+            seen[key] = true;
+
+            var container = r.closest(
+              '[class*=form-section],[class*=question],[class*=field],fieldset,.form-group,.form-row');
+            var heading = '';
+            if (container) {
+              var children = container.querySelectorAll('label,span,p,h3,h4,.label,.title,.heading');
+              for (var c=0;c<children.length;c++){
+                var inp = children[c].querySelector('input,select,textarea');
+                if (!inp && children[c].offsetWidth > 0) {
+                  var txt = children[c].textContent.trim();
+                  if (txt.length >= 2) { heading = txt; break; }
+                }
+              }
+              if (!heading) {
+                var leg = container.querySelector('legend');
+                heading = leg ? leg.textContent.trim() : '';
+              }
+            }
+
+            var options = [];
+            var selector = 'input[type=radio][name="'+r.name+'"]';
+            var siblings = (form||document).querySelectorAll(selector);
+            siblings.forEach(function(s){
+              if (s.closest('[aria-hidden=true]')) return;
+              var optLabel = s.closest('label');
+              var optText = '';
+              if (optLabel) {
+                optText = optLabel.textContent.replace(/\\s+/g,' ').trim();
+              } else if (s.id) {
+                var forLabel = document.querySelector('label[for="'+s.id+'"]');
+                optText = forLabel ? forLabel.textContent.replace(/\\s+/g,' ').trim() : '';
+              }
+              if (!optText && s.value) optText = s.value;
+              options.push({text: optText, value: s.value, checked: s.checked});
+            });
+
+            groups.push({
+              label: heading, type: 'native_radio', name: r.name,
+              owner: ownerId, options: options
+            });
+          });
+          return JSON.stringify(groups.slice(0, 10));
+        })()"""
+        raw = self.cdp.eval(f"(function(){{{js}}})()")
+        try:
+            import json as _j
+            result = _j.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(result, str):
+                result = _j.loads(result)
+            return result if isinstance(result, list) else []
+        except Exception:
+            return []
+
     def fix(self, config: dict, result: ValidationResult) -> dict:
         """LLM fixes failed JSON based on validation results."""
         if result.passed:
@@ -788,6 +886,13 @@ when规则:
                 fields = json.dumps(snap.get("inputs", [])[:10], ensure_ascii=False)
                 buttons = json.dumps(snap.get("buttons", [])[:10], ensure_ascii=False)
                 page_diag = f"URL: {diag.get('url','')}\nTitle: {diag.get('title','')}\n可见输入框: {fields}\n可见按钮: {buttons}"
+                # Add choice_groups
+                try:
+                    choice_groups = self._diagnose_choice_groups()
+                    if choice_groups:
+                        page_diag += f"\n选择组: {json.dumps(choice_groups, ensure_ascii=False)}"
+                except Exception:
+                    pass
                 if diag.get('iframes'):
                     page_diag += f"\niframe: {json.dumps(diag['iframes'], ensure_ascii=False)}"
             except Exception:
