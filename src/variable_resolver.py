@@ -8,6 +8,16 @@ import logging
 class VariableResolver:
     """Resolve {{placeholder}} variables in JSON config values."""
 
+    RANDOM_ALIASES = {
+        "first_name": "name", "firstname": "name",
+        "lastname": "last_name",
+        "zipcode": "zip", "postal_code": "zip", "postal": "zip",
+        "full_name": "name",
+    }
+    PROFILE_ALIASES = {
+        "name": "first_name", "zipcode": "zip", "postal_code": "zip",
+    }
+
     def __init__(self, profile: dict, log=None):
         self.profile = profile
         self.log = log or logging.getLogger(__name__)
@@ -21,8 +31,17 @@ class VariableResolver:
             key = match.group(1)
             # Random generators
             if key.startswith("random."):
-                return self._random(key[7:])
-            # Profile lookup
+                gen = key[7:]
+                gen = self.RANDOM_ALIASES.get(gen, gen)
+                return self._random(gen)
+            # Profile lookup — try exact key, then alias, then random fallback
+            mapped = self.PROFILE_ALIASES.get(key, key)
+            if mapped in self.profile and self.profile[mapped]:
+                return str(self.profile[mapped])
+            if key in self.profile and self.profile[key]:
+                return str(self.profile[key])
+            # Fallback: try as random generator
+            return self._random(key)
             return str(self.profile.get(key, match.group(0)))
 
         return re.sub(r'\{\{(.+?)\}\}', _replace, value)
