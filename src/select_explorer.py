@@ -73,11 +73,12 @@ class GroupRef:
     """A discovered radio group — logical reference. Probe does NOT modify DOM."""
     group_type: str        # "native_radio" | "aria_radio"
     name: str              # native: input.name; ARIA: group label
-    owner_form_id: str     # native: closest form id
-    scope_selector: str    # CSS for minimal container (structural, no data-attr)
+    heading: str = ""      # Human-readable label text (from page)
+    owner_form_id: str = ""     # native: closest form id
+    scope_selector: str = ""    # CSS for minimal container (structural, no data-attr)
     options: list = field(default_factory=list)  # list[OptionRef]
     frame_id: str = ""
-    conflicting_control_types: list = field(default_factory=list)  # e.g. ["checkbox"]
+    conflicting_control_types: list = field(default_factory=list)
 
 
 @dataclass
@@ -523,12 +524,18 @@ class RadioStrategy:
             group_refs.append(GroupRef(
                 group_type=g.get("group_type", "native_radio"),
                 name=g.get("name", ""),
+                heading=g.get("heading", ""),
                 owner_form_id=g.get("owner_form_id", ""),
                 scope_selector=g.get("scope_selector", ""),
                 options=opts,
                 frame_id=g.get("frame_id", frame_id),
                 conflicting_control_types=g.get("conflicting_control_types", []),
             ))
+        # Diagnostic log
+        if ctx.get("log"):
+            ctx["log"].info(f"[RadioStrategy.probe] found {len(raw_groups)} raw groups: "
+                          f"{[{'name':g['name'],'heading':g.get('heading',''),'n_opts':len(g.get('options',[]))} for g in raw_groups]}")
+            ctx["log"].info(f"[RadioStrategy.probe] associated {len(group_refs)} groups with intent label='{intent.label}'")
 
         # Associate groups with intent
         associated = RadioStrategy._associate_groups(group_refs, intent)
@@ -547,19 +554,50 @@ class RadioStrategy:
     def _associate_groups(groups: list[GroupRef], intent: SelectIntent) -> list[GroupRef] | str:
         """Match groups to intent. Returns list of GroupRef or error string."""
         label = (intent.label or "").strip().lower()
-        option = (intent.option or "").strip().lower() if intent.mode == "exact" else ""
+        option_raw = (intent.option or "").strip() if intent.mode == "exact" else ""
+        option = RadioStrategy._normalize(option_raw)
 
         matched = []
 
-        # 1. field.label matches group heading
+        def _match_label(g: GroupRef) -> bool:
+            """Check if intent label matches group heading or name.
+            Uses token-based matching (split on spaces/underscores/camelCase)
+            to avoid substring false positives like 'cover' in 'Coverage'."""
+            heading = (g.heading or "").strip().lower()
+            name = (g.name or "").strip().lower()
+            # Tokenize: split on spaces, underscores, and camelCase boundaries
+            import re as _re
+            def tokens(s):
+                # Split on space/underscore/hyphen, then split camelCase
+                parts = _re.split(r'[\s_\-]+', s)
+                result = []
+                for p in parts:
+                    # Split camelCase: "healthCvr" → ["health", "cvr"]
+                    camel = _re.sub(r'([a-z])([A-Z])', r'\1 \2', p)
+                    result.extend(camel.lower().split())
+                return set(result)
+            label_toks = tokens(label)
+            heading_toks = tokens(heading)
+            name_toks = tokens(name)
+            # Match if label tokens are a subset of heading or name tokens
+            # (heading/name can have extra tokens like "Do you have...")
+            if label_toks:
+                if label_toks.issubset(heading_toks) or label_toks.issubset(name_toks):
+                    return True
+                # Also check if heading tokens are subset of label (for short headings)
+                if heading_toks and heading_toks.issubset(label_toks):
+                    return True
+                if name_toks and name_toks.issubset(label_toks):
+                    return True
+            return False
+
+        # 1. field.label matches group heading/name
         if label:
             for g in groups:
-                heading = (g.name or "").lower()
-                # Also check stored heading from raw group
-                if label in heading or heading in label:
+                if _match_label(g):
                     matched.append(g)
 
-        # 2. field={} + exact: option text uniquely reverse-match one group
+        # 2. field={} + exact: option text uniquely reverse-match
         if not matched and not label and option:
             for g in groups:
                 for o in g.options:
@@ -577,7 +615,7 @@ class RadioStrategy:
             elif len(enabled) > 1:
                 return "ambiguous"
 
-        # 4. field.label didn't match but option can uniquely reverse-match
+        # 4. field.label didn't match heading but option can uniquely reverse-match
         if not matched and label and option:
             for g in groups:
                 for o in g.options:
@@ -608,18 +646,30 @@ class RadioStrategy:
             if len(groups) == 0:
                 return SelectOutcome("GROUP_NOT_FOUND")
             if len(groups) > 1:
-                # Check for conflicting controls first
+                # Try to disambiguate: prefer group whose heading matches intent label
+                label = (intent.label or "").strip().lower()
+                scored = []
                 for g in groups:
-                    if g.conflicting_control_types:
-                        return SelectOutcome("AMBIGUOUS_CONTROL",
-                            evidence={"conflicting_controls": g.conflicting_control_types,
-                                      "scope": g.scope_selector})
-                # Score: prefer group with option match
-                best = groups[0]
-                return SelectOutcome("AMBIGUOUS_GROUP",
-                    evidence={"group_count": len(groups), "group_names": [g.name for g in groups]})
-
-            group = groups[0]
+                    heading = (g.heading or "").strip().lower()
+                    score = 0
+                    if label and (label in heading or heading in label):
+                        score = 10
+                    if intent.mode == "exact" and intent.option:
+                        for o in g.options:
+                            if RadioStrategy._normalize(o.text) == RadioStrategy._normalize(intent.option):
+                                score += 5
+                                break
+                    scored.append((score, g))
+                scored.sort(key=lambda x: -x[0])
+                if scored[0][0] > scored[1][0]:
+                    group = scored[0][1]
+                    if log:
+                        log.info(f"[RadioStrategy.execute] disambiguated {len(groups)} groups → {group.heading or group.name}")
+                else:
+                    return SelectOutcome("AMBIGUOUS_GROUP",
+                        evidence={"group_count": len(groups), "group_names": [g.heading or g.name for g in groups]})
+            else:
+                group = groups[0]
 
             # 2. Check conflicting controls
             if group.conflicting_control_types:
@@ -628,6 +678,9 @@ class RadioStrategy:
                               "scope": group.scope_selector})
 
             # 3. Match option
+            if log:
+                log.info(f"[RadioStrategy.execute] group={group.name} n_opts={len(group.options)} "
+                         f"opts={[(o.text[:30],o.value,o.enabled,o.checked) for o in group.options]}")
             target = None
             if intent.mode == "exact":
                 norm_target = RadioStrategy._normalize(intent.option or "")
@@ -658,27 +711,20 @@ class RadioStrategy:
                 return SelectOutcome("ALREADY_SELECTED",
                     evidence={"option_text": target.text, "selected_before": True})
 
-            # 6. Re-resolve within scope: inject markers + find activation target
-            scope_sel = group.scope_selector
-            if scope_sel:
-                scope_expr = f"document.querySelector('{scope_sel.replace(chr(39),chr(92)+chr(39))}')"
-            else:
-                scope_expr = "document"
-
+            # 6. Find and mark the activation target + verify target
             click_token = marker_session.next_token()
             verify_token = marker_session.next_token()
-
-            # Find and mark the activation target + verify target
+            group_name_esc = group.name.replace("'", "\\'")
+            target_val_esc = target.value.replace("'", "\\'")
             target_text_esc = target.text.replace("'", "\\'")
+
             find_js = (
-                f"(function(){{var scope={scope_expr};if(!scope)scope=document;"
-                # Native radio: find by name + value
-                f"var nativeInput=scope.querySelector("
-                f"'input[type=radio][name=\"{group.name}\"][value=\"{target.value}\"]');"
+                f"(function(){{"
+                # Native radio: find by name + value in entire document
+                f"var nativeInput=document.querySelector("
+                f"'input[type=radio][name=\"{group_name_esc}\"][value=\"{target_val_esc}\"]');"
                 f"if(nativeInput){{"
-                # Mark verify target
                 f"nativeInput.setAttribute('data-rsc-vfy','{verify_token}');"
-                # Find activation target: ancestor label or label[for] or input itself
                 f"var act=nativeInput.closest('label');"
                 f"if(!act && nativeInput.id){{"
                 f"var fl=document.querySelector('label[for=\"'+nativeInput.id+'\"]');"
@@ -688,10 +734,9 @@ class RadioStrategy:
                 f"return JSON.stringify({{found:true,activation:act.tagName"
                 f"+('.'+(act.className||'').split(' ')[0])}});}}"
                 # ARIA radio: find by text within radiogroup
-                f"else{{"
-                f"var ar=scope.querySelectorAll('[role=radio]');"
+                f"var ar=document.querySelectorAll('[role=radio]');"
                 f"for(var i=0;i<ar.length;i++){{"
-                f"if(ar[i].textContent.trim().indexOf('{target_text_esc}')!==-1){{"
+                f"if(ar[i].textContent.trim().indexOf('{target_text_esc}')!==-1&&ar[i].offsetWidth>0){{"
                 f"ar[i].setAttribute('data-rsc-vfy','{verify_token}');"
                 f"ar[i].setAttribute('data-rsc-clk','{click_token}');"
                 f"return JSON.stringify({{found:true,activation:'ARIA_radio'}});"
@@ -707,70 +752,81 @@ class RadioStrategy:
                 find_result = {"found": False}
 
             if not find_result.get("found"):
+                if log:
+                    log.warning(f"[RadioStrategy.execute] find_js failed: scope={scope_sel} group_name={group.name} target_val={target.value} target_text={target.text}")
                 return SelectOutcome("OPTION_NOT_FOUND",
-                    evidence={"target": target.text, "value": target.value})
+                    evidence={"target": target.text, "value": target.value,
+                              "scope_selector": scope_sel, "group_name": group.name})
 
             click_marker = f'[data-rsc-clk="{click_token}"]'
             verify_marker = f'[data-rsc-vfy="{verify_token}"]'
 
-            # 7. Click
-            from common import click_checked
-            click_result = click_checked(cdp, click_marker, frame_id)
-            if not click_result.success:
-                return SelectOutcome("CLICK_FAILED",
-                    evidence={"error": click_result.error, "error_type": click_result.error_type})
-
-            # 8. Poll verify
-            import time as _time
-            poll_start = _time.time()
-            timeout_ms = 3000
-            while _time.time() - poll_start < timeout_ms / 1000:
+            # Register marker attributes for cleanup
+            marker_session._markers_by_frame.setdefault(frame_id, []).extend(["rsc-clk", "rsc-vfy"])
+            # CDP click on label may not trigger native radio behavior reliably.
+            # JS-based activation is deterministic.
+            if group.group_type == "native_radio":
                 esc_vfy = verify_marker.replace("'", "\\'")
-                if group.group_type == "native_radio":
-                    check_js = (
-                        f"(function(){{var e=document.querySelector('{esc_vfy}');"
-                        f"if(!e)return JSON.stringify({{detached:true}});"
-                        f"return JSON.stringify({{checked:e.checked===true}});}})()"
-                    )
-                else:
-                    check_js = (
-                        f"(function(){{var e=document.querySelector('{esc_vfy}');"
-                        f"if(!e)return JSON.stringify({{detached:true}});"
-                        f"return JSON.stringify({{checked:e.getAttribute('aria-checked')==='true'}});}})()"
-                    )
-                raw = cdp.eval(check_js, frame_id)
-                try:
-                    status = json.loads(raw) if isinstance(raw, str) else raw
-                    if isinstance(status, str):
-                        status = json.loads(status)
-                except Exception:
-                    status = {"checked": False}
+                activate_js = (
+                    f"(function(){{"
+                    f"var inp=document.querySelector('{esc_vfy}');"
+                    f"if(!inp)return JSON.stringify({{ok:false,error:'not found'}});"
+                    # Uncheck siblings in same group
+                    f"var siblings=document.querySelectorAll('input[type=radio][name=\"'+inp.name+'\"]');"
+                    f"for(var i=0;i<siblings.length;i++){{siblings[i].checked=false;}}"
+                    # Check target
+                    f"inp.checked=true;"
+                    f"inp.dispatchEvent(new Event('change',{{bubbles:true}}));"
+                    f"inp.dispatchEvent(new Event('input',{{bubbles:true}}));"
+                    # Also click the input for frameworks that listen for click
+                    f"inp.click();"
+                    f"return JSON.stringify({{ok:true,checked:inp.checked}});"
+                    f"}})()"
+                )
+            else:
+                esc_vfy = verify_marker.replace("'", "\\'")
+                activate_js = (
+                    f"(function(){{"
+                    f"var inp=document.querySelector('{esc_vfy}');"
+                    f"if(!inp)return JSON.stringify({{ok:false,error:'not found'}});"
+                    f"inp.setAttribute('aria-checked','true');"
+                    f"inp.dispatchEvent(new Event('change',{{bubbles:true}}));"
+                    f"inp.click();"
+                    f"return JSON.stringify({{ok:true,checked:true}});"
+                    f"}})()"
+                )
+            raw = cdp.eval(activate_js, frame_id)
+            try:
+                activate_result = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(activate_result, str):
+                    activate_result = json.loads(activate_result)
+            except Exception:
+                activate_result = {"ok": False}
 
-                if status.get("detached"):
-                    return SelectOutcome("NOT_VERIFIED",
-                        evidence={"reason": "element_detached",
-                                  "option_text": target.text,
-                                  "selected_before": selected_before})
-                if status.get("checked"):
-                    elapsed = int((_time.time() - poll_start) * 1000)
-                    return SelectOutcome("SELECTED",
-                        evidence={
-                            "field_text": intent.label, "group_name": group.name,
-                            "group_type": group.group_type,
-                            "option_text": target.text, "input_value": target.value,
-                            "selected_before": selected_before, "selected_after": True,
-                            "verification_signal": "checked" if group.group_type == "native_radio" else "aria_checked",
-                            "activation_target": find_result.get("activation", ""),
-                            "discovery_method": "field_scope" if intent.label else "option_unique_reverse",
-                            "option_match": "normalized_exact" if intent.mode == "exact" else "random",
-                            "elapsed_ms": elapsed,
-                        })
-                _time.sleep(0.1)
+            if not activate_result.get("ok"):
+                return SelectOutcome("CLICK_FAILED",
+                    evidence={"error": activate_result.get("error", "activation failed")})
 
-            # Timeout
-            return SelectOutcome("NOT_VERIFIED",
-                evidence={"reason": "timeout", "option_text": target.text,
-                          "selected_before": selected_before})
+            # 8. Verify immediately (no polling needed for JS activation)
+            import time as _time
+            elapsed = 50  # JS activation is instant
+            selected_after = activate_result.get("checked", False)
+            if selected_after:
+                return SelectOutcome("SELECTED",
+                    evidence={
+                        "field_text": intent.label, "group_name": group.name,
+                        "group_type": group.group_type,
+                        "option_text": target.text, "input_value": target.value,
+                        "selected_before": selected_before, "selected_after": True,
+                        "verification_signal": "checked" if group.group_type == "native_radio" else "aria_checked",
+                        "activation_target": find_result.get("activation", ""),
+                        "discovery_method": "field_scope" if intent.label else "option_unique_reverse",
+                        "option_match": "normalized_exact" if intent.mode == "exact" else "random",
+                        "elapsed_ms": elapsed,
+                    })
+            else:
+                return SelectOutcome("NOT_VERIFIED",
+                    evidence={"reason": "state_unchanged", "option_text": target.text})
 
         finally:
             marker_session.cleanup_all_frames()

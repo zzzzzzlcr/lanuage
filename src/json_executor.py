@@ -787,29 +787,41 @@ class JSONExecutor:
                 choice_req = normalize_choice_request(step)
                 if choice_req is not None:
                     origin, intent, original_step = choice_req
-                    ctx = {
-                        "cdp": self.cdp, "locator": self.locator,
-                        "frame_id": self._frame_id, "log": self.log,
-                        "marker_session": MarkerSession(self.cdp),
-                    }
-                    result, outcome = ChoiceExplorer.execute(origin, intent, original_step, ctx)
-                    if result == ChoiceResult.HANDLED:
-                        return outcome.ok
-                    elif result == ChoiceResult.UNSUPPORTED:
-                        self.log.warning(f"[JSON] select_option unsupported: {step.get('field',{}).get('label','')}")
-                        if optional:
-                            return True
+                    self.log.info(f"[JSON] select_option: origin={origin} label={intent.label} mode={intent.mode}")
+                    try:
+                        import time as _t
+                        ctx = {
+                            "cdp": self.cdp, "locator": self.locator,
+                            "frame_id": self._frame_id, "log": self.log,
+                            "marker_session": MarkerSession(self.cdp, prefix=f"rs{int(_t.time()*1000)%100000}"),
+                        }
+                        result, outcome = ChoiceExplorer.execute(origin, intent, original_step, ctx)
+                        self.log.info(f"[JSON] select_option result: {result.value} outcome={outcome.status if outcome else 'None'}")
+                        if result == ChoiceResult.HANDLED:
+                            return outcome.ok
+                        elif result == ChoiceResult.UNSUPPORTED:
+                            self.log.warning(f"[JSON] select_option unsupported (no radio match): {step.get('field',{}).get('label','')}, fallback to legacy")
+                            # Fallback: use _select_option random or _smart_form
+                            if intent.mode == "random":
+                                ok = self._select_option({"selection_strategy": {"type": "random"}})
+                                return ok
+                            else:
+                                return False  # exact mode with no radio match → fail
+                        elif result == ChoiceResult.INVALID:
+                            self.log.warning(f"[JSON] select_option invalid intent")
+                            if optional:
+                                return True
+                            return False
+                        elif result == ChoiceResult.AMBIGUOUS:
+                            self.log.warning(f"[JSON] select_option ambiguous: {outcome.status if outcome else '?'}")
+                            return False  # fail closed, never fallback
+                        elif result == ChoiceResult.DEFER_LEGACY:
+                            self.log.info(f"[JSON] select_option deferred to legacy")
+                            pass  # continue to legacy handler below
+                    except Exception as _e:
+                        import traceback
+                        self.log.error(f"[JSON] select_option error: {_e}\n{traceback.format_exc()}")
                         return False
-                    elif result == ChoiceResult.INVALID:
-                        self.log.warning(f"[JSON] select_option invalid intent")
-                        if optional:
-                            return True
-                        return False
-                    elif result == ChoiceResult.AMBIGUOUS:
-                        self.log.warning(f"[JSON] select_option ambiguous: {outcome.status if outcome else '?'}")
-                        return False  # fail closed, never fallback
-                    elif result == ChoiceResult.DEFER_LEGACY:
-                        pass  # continue to legacy handler below
 
                 if action in ("wait", "delay"):
                     # delay uses "time" in ms, wait uses min/max in seconds
