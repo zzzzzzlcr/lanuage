@@ -58,6 +58,11 @@ class JSONPipeline:
 
 ## 核心规则（以下每一条都来自真实测试发现）
 
+### -1. 模式选择（必读第一！）
+**运营给了编号步骤（1.2.3...）→ 必须用线性模式（"steps":[...]），绝对不准用 loop_until 状态机！**
+**只有运营明确写"when_XXX"或"loop_until"时才用状态机。**
+**运营明确写了具体选择值（如"选择Single Male"）→ 必须用那个精确值，不准改成 __random__！**
+
 ### 0. 动词→动作速查（必读！）
 运营描述中的动词对应唯一的 action 类型，不要自己编造新 action：
 | 运营怎么写 | action | JSON 模板 |
@@ -98,6 +103,9 @@ class JSONPipeline:
 - 数值从运营描述中取，如果运营写"债务金额"或"选择金额"，默认拖到较大值如50000
 
 ### 4. 下拉框选择 (select)
+**关键规则: 运营明确写的选择值必须原样使用，绝对不允许将其替换为__random__！**
+**"选择Single Male" → select:"Single Male"，不是 select:"__random__"**
+**"选择$30k-$60k" → select:"$30k-$60k"，不是 select:"__random__"**
 运营说"选择XXX（下拉框，选YYY）"或"Select XXX（下拉框，选YYY）"或带"（下拉框"字样时:
 - 有id: {"action":"form","find":{"id":"下拉框id"},"select":"选项值"}
 - 有label: {"action":"form","field":{"label":"下拉框的标签文字"},"select":"选项值"}
