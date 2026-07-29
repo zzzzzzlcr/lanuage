@@ -193,37 +193,23 @@ class SelectExplorer:
                                          attempts=attempts)
                 target_text = matches[0]
 
-            # 8. Click option by text — search within the trigger's dropdown region
-            trigger_esc = trigger_marker.replace("'", "\\'")
+            # 8. Click option by text — use CDP real click for reliable event delivery
             escaped = target_text.replace("'", "\\'")
-            # Try to find the dropdown container associated with the trigger
-            region_js = (
-                f"(function(){{var t=document.querySelector('{trigger_esc}');if(!t)return'';"
-                # Prefer aria-controls/owns linked region
-                f"var cid=t.getAttribute('aria-controls')||t.getAttribute('aria-owns');"
-                f"if(cid){{var r=document.getElementById(cid);if(r){{r.setAttribute('data-probe','region');return'[data-probe=region]';}}}}"
-                # Fallback: find nearest visible dropdown/menu sibling or child
-                f"var area=t.closest('[class*=form-item],fieldset,div');"
-                f"if(!area)area=t.parentElement;"
-                f"var dd=area.querySelector('[class*=dropdown],[class*=menu],[class*=popup],[class*=select],"
-                f"[role=listbox],[role=menu]');"
-                f"if(dd&&dd.offsetWidth>0){{dd.setAttribute('data-probe','region');return'[data-probe=region]';}}"
-                f"return'';}})()"
-            )
-            region_sel = str(self.cdp.eval(region_js)).strip().strip('"')
-            scope = region_sel if region_sel and region_sel.startswith('[') else "document"
+            scope = "document"
+            # Mark target option, then CDP-click for real mouse event
             opt_js = (
                 f"(function(){{var scope={scope};"
                 f"var els=scope.querySelectorAll('div,span,li,button,[role=option],option');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"if(els[i].textContent.trim()==='{escaped}'&&els[i].offsetWidth>0){{"
-                f"els[i].setAttribute('data-probe','selected');els[i].click();return'clicked';}}}}"
+                f"els[i].setAttribute('data-probe','selected');return'found';}}}}"
                 f"return'not found';}})()"
             )
             opt_result = self.cdp.eval(opt_js)
             if "not found" in str(opt_result):
                 return SelectOutcome("OPTION_NOT_FOUND", attempts=attempts,
                                      evidence={"click_result": str(opt_result)})
+            self.cdp.click('[data-probe=\"selected\"]')
             time.sleep(0.3)
 
             # 9. Verify
@@ -254,19 +240,31 @@ class SelectExplorer:
             f"(function(){{var e=document.querySelector('{esc}');return e?e.tagName:'';}})()")
         if "SELECT" not in str(info).upper():
             return None
-        self.cdp.form(marker, select=intent.option)
-        time.sleep(0.2)
+        if intent.mode == "random":
+            # Pick random option, skip placeholder (value="")
+            self.cdp.eval(
+                f"(function(){{var e=document.querySelector('{esc}');if(!e)return;"
+                f"var opts=e.querySelectorAll('option');var vis=[];"
+                f"for(var i=0;i<opts.length;i++){{if(opts[i].value&&opts[i].textContent.trim())vis.push(opts[i]);}}"
+                f"if(!vis.length)return;var pick=vis[Math.floor(Math.random()*vis.length)];"
+                f"e.value=pick.value;e.dispatchEvent(new Event('change',{{bubbles:true}}));}})()"
+            )
+            time.sleep(0.2)
+        else:
+            self.cdp.form(marker, select=intent.option)
+            time.sleep(0.2)
         val = self.cdp.eval(
             f"(function(){{var e=document.querySelector('{esc}');"
             f"if(!e||!e.selectedOptions||!e.selectedOptions.length)return'no selection';"
             f"return JSON.stringify({{text:e.selectedOptions[0].textContent.trim(),"
             f"value:e.value}});}})()")
         self.log.info(f"[explorer] native verify: marker={marker} val={str(val)[:80]}")
-        # Check both option text and select value
-        match = intent.option and (
-            intent.option.lower() in str(val).lower()
-        )
-        if match:
+        # For random: any non-empty value is success. For exact: match option text or value.
+        if intent.mode == "random":
+            ok = "no selection" not in str(val) and str(val).strip() not in ("", "{}")
+        else:
+            ok = intent.option and intent.option.lower() in str(val).lower()
+        if ok:
             return SelectOutcome("SELECTED", selected_text=str(val)[:80],
                                  evidence={"native_select": True})
         return SelectOutcome("NOT_VERIFIED", evidence={"native_value": str(val)[:80]})
