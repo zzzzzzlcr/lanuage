@@ -64,6 +64,7 @@ class JSONPipeline:
 |-----------|--------|----------|
 | 等待 X-Y 秒 | wait | {"action":"wait","min":X,"max":Y} |
 | 点击XXX | click | {"action":"click","find":{"text":"XXX"}} |
+| - 如果XXX是agree/terms/privacy/consent/policy等checkbox文字 → 用勾选代替点击: {"action":"form","field":{"label":"XXX","type":"checkbox"},"check":"true"} |
 | 填邮箱/填姓名/填密码/填写XXX | form | {"action":"form","field":{"label":"XXX","type":"推断"},"value":"{{变量}}"} |
 | 选择XXX（下拉框，选YYY） | form | {"action":"form","field":{"label":"XXX"},"select":"YYY"} |
 | 选择评分N（星级） | form | {"action":"form","field":{"label":"rating"},"select":"N"} |
