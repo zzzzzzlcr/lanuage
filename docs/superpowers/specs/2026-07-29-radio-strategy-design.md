@@ -1,4 +1,4 @@
-# RadioStrategy — 通用 Radio Group 选择策略（v3 final）
+# RadioStrategy — 通用 Radio Group 选择策略（v4.1 implementation-ready）
 
 ## Context
 
@@ -49,37 +49,54 @@ class StrategyProbe:
 
 @dataclass
 class GroupRef:
-    """A discovered radio group."""
+    """A discovered radio group — logical reference, not a marker selector.
+    Probe does NOT modify DOM. Unique markers are injected later by execute()."""
     group_type: str        # "native_radio" | "aria_radio"
     name: str              # native: input.name; ARIA: group label
     owner_form_id: str     # native: closest form id (grouping key)
-    scope_selector: str    # CSS selector for the minimal container
-    options: list[OptionRef]  # individual radio options
+    scope_selector: str    # CSS selector for the minimal container (structural, no data- attr)
+    options: list[OptionRef]
     frame_id: str
+    conflicting_control_types: list[str]  # e.g. ["checkbox"] within same field scope
 
 @dataclass
 class OptionRef:
-    text: str              # accessible name (label textContent / aria-label / value)
+    text: str              # accessible name
     value: str             # input.value or aria value
-    input_selector: str    # unique marker for this option's input element
-    activation_selector: str  # unique marker for the clickable target (label / input)
+    index: int             # 0-based index within group (for execute() re-resolution)
     checked: bool
     enabled: bool
     visible: bool
+    # Activation target resolved at execute() time, not probe time
 
 class RadioStrategy:
     @staticmethod
     def probe(intent: ChoiceIntent, ctx: ExecutionContext) -> StrategyProbe | None:
-        """Single JS eval — scan for input[type=radio]/[role=radio] groups.
-        Returns None if no visible enabled radio groups found.
-        Does NOT call FieldLocator. Probe is read-only."""
-        ...
+        """Single JS eval — scan for radio groups. Returns None if:
+        - No visible enabled radio groups found anywhere on page
+        - Radio groups exist but NONE can be associated with this intent:
+          * field.label doesn't match any group's heading/label
+          * exact option text doesn't uniquely reverse-match any group
+          * field={} and random but page has multiple visible groups
+        - The matched field scope also contains conflicting controls (checkbox)
+          → return StrategyProbe with conflicting_control_types signal
+        
+        Read-only. Does NOT modify DOM. Does NOT call FieldLocator.
+        Returns logical refs, not marker selectors."""
 
     @staticmethod
-    def execute(intent: ChoiceIntent, probe: StrategyProbe, ctx: ExecutionContext) -> SelectOutcome:
-        """Consume probe's pre-discovered GroupRef/OptionRef.
-        Must NOT re-scan the full page. Only operates within probe.candidates scopes."""
-        ...
+    def _associate_groups_with_intent(
+        groups: list[GroupRef],
+        intent: ChoiceIntent,
+    ) -> list[GroupRef] | str:
+        """Return matched groups, or a reason string for non-match.
+        
+        Scoring:
+        1. field.label matches group label/legend/heading → matched
+        2. field={} + exact: option text uniquely present in one group → option_unique_reverse
+        3. field={} + random: only one visible group on page → single_visible_group
+        4. Otherwise → empty list (caller returns None → DEFER_LEGACY)
+        """
 
 class DropdownStrategy:
     @staticmethod
@@ -116,30 +133,71 @@ class ChoiceExplorer:
         if rp:
             probes.append(rp)
 
-        # Step 3: arbitrate — at most one probe type this round
+        # Step 3: arbitrate
         if len(probes) == 0:
             if request.origin == "canonical":
-                return (ChoiceResult.UNSUPPORTED, SelectOutcome(status=UNSUPPORTED_CONTROL, ok=False))
+                return (ChoiceResult.UNSUPPORTED, SelectOutcome(status=UNSUPPORTED_CONTROL))
             else:
                 return (ChoiceResult.DEFER_LEGACY, None)
 
-        if len(probes) > 1:
-            return (ChoiceResult.AMBIGUOUS, SelectOutcome(status=AMBIGUOUS_CONTROL, ok=False))
-
-        # Step 4: execute the single strategy
         probe = probes[0]
+
+        # Conflicting controls within matched field scope → AMBIGUOUS_CONTROL
+        for group in probe.candidates:
+            if group.conflicting_control_types:
+                return (ChoiceResult.AMBIGUOUS,
+                        SelectOutcome(status=AMBIGUOUS_CONTROL,
+                                      evidence={"conflicting_controls": group.conflicting_control_types,
+                                                "scope": group.scope_selector}))
+
+        # Step 4: execute the single matching strategy
         outcome = RadioStrategy.execute(request.intent, probe, ctx)
         ctx.marker_session.cleanup_all_frames()
         return (ChoiceResult.HANDLED, outcome)
 
     def _validate_intent(self, intent: ChoiceIntent) -> bool:
-        """Discriminated union validation."""
+        """Discriminated union validation — checks raw step BEFORE constructing ChoiceIntent."""
+        if not isinstance(intent, ChoiceIntent):
+            return False
         if intent.mode == "exact":
-            return bool(intent.option and intent.option.strip())
+            return isinstance(intent.option, str) and bool(intent.option.strip())
         elif intent.mode == "random":
             return intent.option is None
         return False  # unknown mode
+
+
+def parse_and_validate_choice(step: dict) -> ChoiceIntent | None:
+    """Validate raw step dict before constructing ChoiceIntent.
+    Returns None if malformed (caller produces INVALID_INTENT outcome).
+    """
+    if not isinstance(step, dict):
+        return None
+    opt = step.get("option")
+    if not isinstance(opt, dict):
+        return None
+    field = step.get("field")
+    if field is not None and not isinstance(field, dict):
+        return None
+    mode = opt.get("mode", "")
+    if mode not in ("exact", "random"):
+        return None
+    text = opt.get("text")
+    if mode == "exact":
+        if not isinstance(text, str) or not text.strip():
+            return None
+    elif mode == "random":
+        if "text" in opt:
+            return None  # random MUST NOT carry text
+    return ChoiceIntent(
+        label=(field or {}).get("label", "") if field else "",
+        mode=mode,
+        option=text if mode == "exact" else None,
+    )
 ```
+
+`normalize_choice_request` 调用 `parse_and_validate_choice`；返回 None 时 ChoiceExplorer 返回 `(INVALID, SelectOutcome(status=INVALID_INTENT))`。
+
+**同时修复** `SelectOutcome`：`ok` 是只读 `@property`，移除所有手动传入的 `ok=False`。`INVALID_INTENT` 加入 status 全集。
 
 ### 1.4 路由表（_execute_step 中的固定分支）
 
@@ -174,11 +232,13 @@ step.action == "select":
     strategy = step.get("selection_strategy", {}).get("type", "")
     if strategy == "random":
         request = normalize_choice_request(step)   # origin=legacy
-        result, outcome = ChoiceExplorer.execute(request, ctx)
-        if result == ChoiceResult.HANDLED:
-            return outcome.ok
-        elif result == ChoiceResult.DEFER_LEGACY:
-            pass  # fall through to _select_option
+        # Skip probe if container / control_types present (quiz/Q2 legacy)
+        if not step.get("container") and not step.get("control_types"):
+            result, outcome = ChoiceExplorer.execute(request, ctx)
+            if result == ChoiceResult.HANDLED:
+                return outcome.ok
+            elif result == ChoiceResult.DEFER_LEGACY:
+                pass  # fall through to _select_option
     # first / match_text / container / control_types → never probe, stay legacy
     # Continue to existing _select_option(step)
     ...
@@ -256,20 +316,18 @@ def normalize_choice_request(step: dict) -> NormalizedChoice | None:
 - legacy + INVALID → fall through legacy（旧协议可能仍可工作）
 - 歧义（任何 origin）→ 零点击，禁止 fallback
 
-### 1.4 RadioStrategy.execute(intent, probe, frame_id)
+### 1.6 RadioStrategy.execute(intent, probe, ctx)
 
 ```
-1. scope_candidates = locate_scope_candidates(field_label, option_text)
-     field_label 主路径；失败时 option_text 反推（仅唯一匹配恢复）
-     field={}: 跳过 field_label 定位
+Precondition: probe already confirmed that intent is associated with specific groups,
+and groups have no conflicting_control_types (checked in arbitrate).
 
-2. groups = discover_radio_groups(scope_candidates, frame_id)
-     scope 逐层: fieldset/legend → 语义容器 → 共同祖先 → 外扩
-     native: 按 form owner + name 分组
-     ARIA: 按 [role=radiogroup] 分组
-     可见 + enabled；排除 hidden step、aria-hidden、disabled
-     隐藏 native input + 可见 label → 候选
-     role wrapper + 隐藏 native input → 去重
+1. groups = probe.candidates  (list[GroupRef] — pre-discovered logical refs)
+
+2. Inject unique markers into the confirmed group scope ONLY:
+     ctx.marker_session.mark_scope(probe.candidates[0].scope_selector)
+     → execute re-resolves options within this scope by index
+     → does NOT re-scan the full page
 
 3. group = score_and_select_group(groups, field_label, option_text)
      评分: option_text 在组内 > legend/aria-labelledby > DOM 距离 > name token
@@ -279,34 +337,34 @@ def normalize_choice_request(step: dict) -> NormalizedChoice | None:
      normalized_exact: 空白/NBSP/大小写/连字符 → 全文相等
      random: 随机未选中项
      不匹配 → OPTION_NOT_FOUND
-     random + 全部已选 → ALREADY_SELECTED
+     random 已有任何选择 → ALREADY_SELECTED（不重新随机）
 
 5. read selected_before
 
-6. 已选中 → ALREADY_SELECTED（不重复点击）
+6. 已选中 → ALREADY_SELECTED
 
-7. activation = resolve_activation_target(target)
-     input / 祖先 label / label[for]
+7. resolve activation target: input / 祖先 label / label[for]
+     → unique markers for click target + verify control
 
-8. click_and_verify(activation, target, group, frame_id)
-     - 生成唯一 click_marker 和 verify_marker（均携带 frame_id token）
-     - CDP click(click_marker)
-     - 检测 click 返回码 → 失败则 CLICK_FAILED
-     - poll_until(predicate, timeout)
-       native: verify_marker.checked === true + 同组唯一 checked
-       ARIA: verify_marker.ariaChecked === "true"
-     - 超时/元素 detached → NOT_VERIFIED
-     - finally: 逐 frame 清理所有 marker（不使用固定 data-probe 字符串）
+8. result = click_checked(cdp, click_marker, ctx.frame_id)
+     → CLICK_FAILED if click fails
 
-9. return SelectOutcome(status, evidence)
+9. poll verify predicate:
+     native: target input.checked === true + 同组唯一 checked
+     ARIA: aria-checked === "true"
+     element detached → NOT_VERIFIED (reason=element_detached)
+     超时 → NOT_VERIFIED (reason=timeout)
+
+10. finally: ctx.marker_session.cleanup_all_frames()
+
+11. return SelectOutcome(status, evidence)
 ```
-
 **Radio 语义硬编码规则**：
 - 只发现当前可见且 enabled 的组
 - 隐藏 native input + 可见关联 label → 候选
 - role wrapper + 隐藏 native input → 去重为一个逻辑选项
 - Native: target radio checked + 同组仅一个 checked
-- Random + 已有选择 → ALREADY_SELECTED
+- Random + 已有任何选择 → ALREADY_SELECTED（不等全部选完）
 - field={}: exact 唯一反查；random 唯一 visible group
 - 多个 Yes/No 组：仅靠 "No" 不能猜组
 - DOM remount（元素 detached）→ shared verifier 检测 → NOT_VERIFIED
@@ -342,40 +400,34 @@ class VerifyResult:
 - 每个 frame 独立分配 token
 - finally 块逐 frame 清理，不留残留
 
-### 2.3 CDP Click 底层修复（common.py）
+### 2.3 CDP Click 底层修复（common.py — 直接修改 CDPHelper）
+
+**不能在包装层绕过** — `CDPHelper.click()` 当前签名 `click(selector, frame_id="")` 没有 timeout 参数，不检查 subprocess returncode，丢掉 stderr。所有包装都会因 TypeError 或静默失败。
+
+**必须直接修改 CDPHelper.click()**：
 
 ```python
-def click_checked(cdp, selector: str, frame_id: str = "", timeout_ms: int = 3000) -> ClickResult:
-    """Structured CDP click. Checks subprocess returncode, timeout, stderr, and
-    verifies the element still exists after click (not detached by DOM remount).
-
-    Returns ClickResult(success, error, error_type).
-    Does NOT silently swallow click failures.
+# common.py — CDPHelper.click() 修改后签名
+def click(self, selector: str, frame_id: str = "", timeout_ms: int = 3000) -> ClickResult:
+    """Structured CDP click returning ClickResult.
+    
+    Checks: subprocess returncode, timeout, stderr content.
+    Does NOT silently swallow failures.
+    Returns ClickResult(success, error_code, error_detail).
     """
-    try:
-        raw = cdp.click(selector, frame_id, timeout=timeout_ms)
-        # Parse raw CDP response — check for error indicators
-        if isinstance(raw, dict):
-            err = raw.get("error") or raw.get("exception", {}).get("description", "")
-            if err:
-                return ClickResult(success=False, error=err, error_type="cdp_error")
-            return ClickResult(success=True, error=None, error_type=None)
-        if isinstance(raw, str):
-            if "Error" in raw or "Exception" in raw:
-                return ClickResult(success=False, error=raw[:200], error_type="cdp_error")
-            return ClickResult(success=True, error=None, error_type=None)
-        return ClickResult(success=True, error=None, error_type=None)
-    except subprocess.TimeoutExpired:
-        return ClickResult(success=False, error="timeout", error_type="timeout")
-    except Exception as e:
-        return ClickResult(success=False, error=str(e)[:200], error_type="exception")
+    # 1. Resolve element coordinates via DOM.getBoundingClientRect
+    # 2. Dispatch Input.dispatchMouseEvent
+    # 3. Check subprocess returncode != 0 → CLICK_FAILED
+    # 4. Check timeout → CLICK_FAILED
+    # 5. Check stderr for CDP error → CLICK_FAILED
+    # 6. DOM detached is NOT a click failure — it's detected by verifier as NOT_VERIFIED
 ```
 
 **同时立即修复** `json_executor.py` 两处现有假成功（不保留 FIXME）：
-- L512: `"checked" in "not checked"` → 改为精确 `=== true` 比较
-- L542: `"checked" in "not checked"` → 同上
+- L512: `"checked" in "not checked"` → 改为 `json.loads(raw)["checked"] is True`
+- L542: 同上
 
-两处都在 `_select_option()` 的 quiz-scoped / control_types 路径。修复方式：将 JS verify 改为返回 JSON `{"checked": true}` 或 `{"checked": false}`，Python 侧 `json.loads()` 后精确比较。
+两处都在 `_select_option()` 的 quiz-scoped / control_types 路径。
 
 ### 2.4 ProbeSession — frame_id 跟踪
 
@@ -567,7 +619,7 @@ def _diagnose_choice_groups(cdp, frame_id="") -> list[dict]:
 ```
 ### 语义选择 (select_option)
 
-当运营写"选择问题 XXX(选YYY)"时, 生成:
+当运营写"选择问题 XXX(选YYY)"（明确的单选题）时, 生成:
 {
   "action": "select_option",
   "field": {"label": "问题文字"},
@@ -582,8 +634,11 @@ def _diagnose_choice_groups(cdp, frame_id="") -> list[dict]:
 }
 
 规则:
-- field.label 和 option.text 必须从"当前页面可见元素"的"选择组"中复制原文
-  不翻译、不改写、不补充、不修改标点/货币符号/数值范围
+- field.label 和 option.text 来源优先级:
+  1. choice_groups 中对应组/选项的原文（首选）
+  2. 运营描述中明确的原文（choice_groups 无此组时，如后续 wizard 页尚未出现在快照中）
+  3. field={}（两步都不适用时）
+  始终禁止翻译、改写、补充或修改标点/货币符号/数值范围
 - 没有可靠问题文字时 "field":{}
 - 本动作支持: radio group
 - 不支持: checkbox、卡片选择、星级评分、下拉框
@@ -634,13 +689,13 @@ L47: `field.type` 自动补全跳过 `action="select_option"`。
 | # | 文件 | 变更 |
 |---|------|------|
 | 1 | `src/select_explorer.py` | 新增 `StrategyProbe`、`NormalizedChoice`、`RadioStrategy`（含 `.probe()` + `.execute()`）、`DropdownStrategy.probe()`、`ChoiceExplorer`（probe→arbitrate→dispatch）；扩展 `SelectOutcome`；`VerifyResult` |
-| 2 | `src/json_executor.py` | `_execute_step()`: 新增 `_normalize_choice_request()` + `action="select_option"` 路由（在 form 分支前）；RadioStrategy 正向命中短路 `_smart_form`（不删旧代码）；旧 `_select_option` "checked" substring 假阳性标记 FIXME |
+| 2 | `src/json_executor.py` | `_execute_step()`: 新增 `_normalize_choice_request()` + `action="select_option"` 路由（在 form 分支前）；RadioStrategy 正向命中短路 `_smart_form`（不删旧代码）；立即修复 L512/L542 `"checked" in "not checked"` 假阳性 → `json.loads(raw)["checked"] is True` |
 | 3 | `src/json_pipeline.py` | 新增 `_diagnose_choice_groups()`；GENERATE_PROMPT: 删除 radio→click 规则，新增 select_option 章节，更新动作表、白名单；FIX_PROMPT: select_option 修复指引；`_post_fix`: 精确 `has_choice` 逻辑 |
 | 4 | `src/auto_fixer.py` | L47: 跳过 `select_option` 步骤的 type 补全 |
-| 5 | `src/common.py` | 新增 `ClickResult` + `safe_click()` — CDP click 结构化返回，支持 CLICK_FAILED |
+| 5 | `src/common.py` | 直接修改 `CDPHelper.click()`：新增 `timeout_ms` 参数、检查 subprocess returncode/stdout/stderr、返回 `ClickResult` 结构体 |
 | 6 | `tests/conftest.py` | **新增** — pytest fixtures: CDP mock, frame helpers, test page loaders |
 | 7 | `tests/fixtures/radio-groups.html` | **新增** — 独立 radio 测试页（native/ARIA/label-for/hidden/disabled/YesNo×2/iframe） |
-| 8 | `tests/test_choice_explorer.py` | **新增** — 20 个单元测试 |
+| 8 | `tests/test_choice_explorer.py` | **新增** — U1-U25 单元测试（含 parser、probe、execute、diagnostic） |
 | 9 | `tests/test_select_option_compat.py` | **新增** — 5 个兼容测试 |
 | 10 | `tests/test_select_option_pipeline.py` | **新增** — Prompt/_post_fix/auto_fixer 集成测试 |
 | 11 | `tests/test_radio_strategy_ctm.py` | **新增** — CTM 集成测试，使用 `MOCK_BASE_URL`/`WS_URL` 环境变量，每例 reload/reset |
@@ -695,8 +750,8 @@ def execute_choice_step(self, step: dict) -> SelectOutcome:
 | U11 | field={} + 多个 group 含此选项 | AMBIGUOUS_GROUP |
 | U12 | field={} + random + 唯一 group | SELECTED |
 | U13 | field={} + random + 多个 group | AMBIGUOUS_GROUP |
-| U14 | disabled radio group | GROUP_NOT_FOUND |
-| U15 | hidden wizard step radio | GROUP_NOT_FOUND |
+| U14 | disabled radio group — no enabled groups on page | Probe returns None → DEFER_LEGACY（legacy 路径自行处理）或 canonical 下 UNSUPPORTED_CONTROL |
+| U15 | hidden wizard step radio — 不可见组 | Probe 排除 hidden，同 U14 |
 | U16 | 点击后 checked 不变 | NOT_VERIFIED, reason=state_unchanged |
 | U17 | CDP click 报错 | CLICK_FAILED |
 | U18 | iframe 内 radio | SELECTED, frame_id 全链传递 |
@@ -712,13 +767,14 @@ def execute_choice_step(self, step: dict) -> SelectOutcome:
 
 | ID | 用例 | 期望 |
 |----|------|------|
-| C1 | legacy form+select `__random__` + DOM 确认 radio | normalize(legacy) → ChoiceExplorer → RadioStrategy → SELECTED |
-| C2 | legacy form+select `__random__` + DOM 是 native `<select>` | normalize(legacy) → DropdownStrategy probe → SelectExplorer |
-| C3 | legacy form+select `"No"` (exact) + DOM 确认 radio | normalize(legacy, exact) → RadioStrategy → SELECTED |
-| C4 | legacy action=select random + DOM 确认 radio | normalize(legacy) → RadioStrategy → SELECTED |
-| C5 | legacy action=select random + DOM 仅 checkbox | UNSUPPORTED_CONTROL → legacy fallback `_select_option()` |
-| C6 | 连续两题 marker 不串（Q1→Q2） | Q2 不受 Q1 残留 marker 影响 |
-| C7 | RadioStrategy 成功后不回退 legacy | 不再执行 `_smart_form` |
+| C1 | legacy form+select `__random__` + DOM 确认 radio | normalize(legacy) → RadioStrategy.probe matches → ChoiceExplorer → HANDLED → SELECTED |
+| C2 | legacy form+select `__random__` + DOM 是 native `<select>`（无 radio） | RadioStrategy.probe returns None → DEFER_LEGACY → 原 form handler → FieldLocator → SelectExplorer |
+| C3 | legacy form+select `"No"` (exact) + DOM 确认 radio | normalize(legacy, exact) → RadioStrategy.probe matches → HANDLED → SELECTED |
+| C4 | legacy action=select random + DOM 确认 radio | normalize(legacy) → RadioStrategy.probe matches → HANDLED → SELECTED |
+| C5 | legacy action=select random + DOM 仅 checkbox（无 radio） | RadioStrategy.probe returns None → DEFER_LEGACY → `_select_option()` 原路径 |
+| C6 | 连续两题 marker 不串（Q1→Q2） | Q2 不受 Q1 残留 marker 影响；marker_session.cleanup_all_frames 在每次 execute 的 finally 中执行 |
+| C7 | RadioStrategy.probe 后 HANDLED → 不回退 legacy | `_execute_step` 在 HANDLED 后直接 return，不执行 `_smart_form` |
+| C8 | 页面有无关 radio（Gender 组），但目标是 legacy form+select Country 下拉框 | RadioStrategy.probe 发现 radio 但与 Country intent 无关联 → returns None → DEFER_LEGACY → 原 form handler |
 
 ### Pipeline 测试 (tests/test_select_option_pipeline.py)
 
