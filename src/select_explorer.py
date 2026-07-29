@@ -258,9 +258,15 @@ class SelectExplorer:
         time.sleep(0.2)
         val = self.cdp.eval(
             f"(function(){{var e=document.querySelector('{esc}');"
-            f"if(!e||!e.selectedOptions||!e.selectedOptions.length)return'';"
-            f"return e.selectedOptions[0].textContent.trim();}})()")
-        if intent.option and intent.option.lower() in str(val).lower():
-            return SelectOutcome("SELECTED", selected_text=str(val).strip(),
+            f"if(!e||!e.selectedOptions||!e.selectedOptions.length)return'no selection';"
+            f"return JSON.stringify({{text:e.selectedOptions[0].textContent.trim(),"
+            f"value:e.value}});}})()")
+        self.log.info(f"[explorer] native verify: marker={marker} val={str(val)[:80]}")
+        # Check both option text and select value
+        match = intent.option and (
+            intent.option.lower() in str(val).lower()
+        )
+        if match:
+            return SelectOutcome("SELECTED", selected_text=str(val)[:80],
                                  evidence={"native_select": True})
-        return SelectOutcome("NOT_VERIFIED", evidence={"native_value": str(val)})
+        return SelectOutcome("NOT_VERIFIED", evidence={"native_value": str(val)[:80]})
