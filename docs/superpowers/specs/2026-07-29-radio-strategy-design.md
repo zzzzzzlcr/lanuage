@@ -1,4 +1,4 @@
-# RadioStrategy — 通用 Radio Group 选择策略（redline v2）
+# RadioStrategy — 通用 Radio Group 选择策略（v3 final）
 
 ## Context
 
@@ -6,117 +6,216 @@
 
 | 路径 | 位置 | 问题 |
 |------|------|------|
-| `_smart_form` radio/chip 分支 | `json_executor.py` ~L1051-1114 | 指定选项匹配失败后降级为 random；从 parentElement 随机搜 chip，作用域不可靠；点击后不验证 checked |
-| `_select_option()` | `json_executor.py` L451-631 | 全局 random 跳过 CTA 词但不验证 radio state |
-| `_try_quiz_group()` | `json_executor.py` L972-1007 | 仅处理 scoped quiz，不处理精确选项 |
-| Shared verifier | `select_explorer.py` L227 | `"verified" in "not verified"` → True（substring 假阳性） |
+| `_smart_form` radio/chip 分支 | `json_executor.py` ~L1051-1114 | 指定选项降级 random；parentElement 随机搜 chip 作用域不可靠；不验证 checked |
+| `_select_option()` | `json_executor.py` L451-631 | 两处 `"checked" in "not checked"` 假成功；全局 random 不验证 radio state |
+| `_try_quiz_group()` | `json_executor.py` L972-1007 | 仅 scoped quiz，不支持精确选项 |
+| Shared verifier | `select_explorer.py` L227 | 已修（精确比较）；但 ProbeSession 不记录 marker frame_id，SelectExplorer 后续操作丢失 frame_id |
+| CDP click | `common.py` | `click()` 不检查返回码、不抛点击错误，无法可靠产生 CLICK_FAILED |
 
-CTM 表单的 "Annual Income Range → $30k-$60k" 和 "Do you have existing cover? → No" 是标准 `<label><input type="radio">text</label>` 结构，当前全部失败。
-
-本设计新增 `RadioStrategy` 作为已有 SelectExplorer 架构下的交互策略，由 `ChoiceExplorer.classify()` 基于 DOM 正向证据分发。RadioStrategy 有正向证据时短路旧逻辑；未覆盖形态（checkbox/card/rating/chip）保留 legacy。
+CTM 的 "Annual Income Range → $30k-$60k"、 "Do you have existing cover? → No" 是标准 `<label><input type="radio">text</label>`，当前全部失败。
 
 ---
 
-## 一、路由架构
+## 一、核心架构：Strategy Probe + Origin-Aware Routing
 
-### 1.1 入口：normalize → classify → dispatch
+**关键设计决策**：
+- 本轮 canonical `select_option` **仅支持 radio**；dropdown 继续走 `form+select`
+- RadioStrategy 正向命中后短路旧逻辑；**不删除** `_smart_form` 旧分支（等其他 Strategy 迁完再删）
+
+### 1.1 Strategy Probe 接口（解决 classify↔locate 循环依赖）
+
+每个 Strategy 先产生结构化 Probe，ChoiceExplorer 再基于所有 Probe 分类。解耦分类与定位：
+
+```python
+@dataclass
+class StrategyProbe:
+    kind: str              # "native_radio" | "aria_radio" | "native_select" | "combobox" | "unsupported"
+    candidates: list       # radio: list of GroupRef; dropdown: list of CandidateRef
+    frame_id: str
+    confidence: float      # 0.0-1.0, 基于 DOM 正向证据
+    evidence: dict
+
+class RadioStrategy:
+    @staticmethod
+    def probe(intent: ChoiceIntent, frame_id: str) -> StrategyProbe | None:
+        """Single JS eval — scan for input[type=radio]/[role=radio] groups.
+        Returns None if no radio groups found. Does NOT call FieldLocator."""
+        ...
+
+class DropdownStrategy:
+    @staticmethod
+    def probe(intent: ChoiceIntent, frame_id: str) -> StrategyProbe | None:
+        """Uses FieldLocator to find CandidateRef for native <select>/[role=combobox].
+        Returns None if no candidates."""
+        ...
+```
+
+### 1.2 ChoiceExplorer 分发流程
+
+```python
+class ChoiceExplorer:
+    def execute(self, request: NormalizedChoice, frame_id: str = "") -> SelectOutcome:
+        # Step 1: 收集所有 Strategy Probe
+        probes = []
+        for strategy in [RadioStrategy, DropdownStrategy]:
+            p = strategy.probe(request.intent, frame_id)
+            if p:
+                probes.append(p)
+
+        # Step 2: 仲裁
+        resolution = self._arbitrate(probes, request)
+
+        # Step 3: 分发
+        if resolution.can_execute:
+            outcome = resolution.strategy.execute(request.intent, resolution.probe, frame_id)
+            self._cleanup_markers(frame_id)
+            return outcome
+        elif request.origin == "legacy":
+            return self._fallback_legacy(request)
+        else:
+            return SelectOutcome(status=UNSUPPORTED_CONTROL, ok=False)
+```
+
+**仲裁规则**：
+- 单一 Probe 且 confidence > 0 → 执行
+- 多个 Probe → AMBIGUOUS_CONTROL，零点击
+- 零 Probe → origin=canonical: UNSUPPORTED_CONTROL；origin=legacy: fallback
+
+### 1.3 Request Origin 模型
+
+```python
+@dataclass
+class NormalizedChoice:
+    intent: ChoiceIntent
+    origin: str           # "canonical" | "legacy"
+    original_step: dict   # legacy 时保存原始 step，canonical 时为 None
+
+def normalize_choice_request(step: dict) -> NormalizedChoice:
+    action = step.get("action", "")
+    if action == "select_option":
+        # Canonical — new protocol
+        mode = step["option"]["mode"]
+        text = step["option"].get("text") if mode == "exact" else None
+        return NormalizedChoice(
+            intent=ChoiceIntent(
+                label=step.get("field", {}).get("label", ""),
+                mode=mode,
+                option=text,
+            ),
+            origin="canonical",
+            original_step=None,
+        )
+    elif action == "form" and "select" in step:
+        # Legacy — old form+select (could be radio, dropdown, or rating)
+        sel = step["select"]
+        if sel == "__random__":
+            return NormalizedChoice(
+                intent=ChoiceIntent(
+                    label=step.get("field", {}).get("label", ""),
+                    mode="random",
+                    option=None,
+                ),
+                origin="legacy",
+                original_step=step,
+            )
+        else:
+            # Exact: "No", "$30k-$60k" — treat as exact intent
+            return NormalizedChoice(
+                intent=ChoiceIntent(
+                    label=step.get("field", {}).get("label", ""),
+                    mode="exact",
+                    option=sel,
+                ),
+                origin="legacy",
+                original_step=step,
+            )
+    elif action == "select":
+        # Legacy — action=select (quiz random)
+        return NormalizedChoice(
+            intent=ChoiceIntent(label="", mode="random", option=None),
+            origin="legacy",
+            original_step=step,
+        )
+    return None  # not a choice step
+```
+
+**回退规则**（硬编码，不可配置）：
+- origin=canonical + unsupported → UNSUPPORTED_CONTROL，零点击，失败
+- origin=canonical + RadioStrategy 执行后任何失败 → 禁止 legacy fallback，返回 Outcome
+- origin=legacy + RadioStrategy 确认 radio 并执行后 → 禁止 legacy fallback
+- origin=legacy + unsupported（checkbox/card/rating）→ 使用 original_step 回退旧路径
+- 歧义（任何 origin）→ 零点击，禁止 fallback
+
+### 1.4 RadioStrategy.execute(intent, probe, frame_id)
 
 ```
-_execute_step(step)
-  → step = _normalize_choice_step(step)     // 旧协议 → ChoiceIntent
-  → if step.action == "select_option":
-      → ChoiceExplorer.execute(intent, frame_id)
-        → classify(intent, frame_id)
-           返回: RADIO_GROUP | NATIVE_SELECT | COMBOBOX | UNSUPPORTED
-        → dispatch:
-            RADIO_GROUP    → RadioStrategy
-            NATIVE_SELECT  → SelectExplorer (existing)
-            COMBOBOX       → SelectExplorer (existing)
-            UNSUPPORTED    → fall through to legacy paths
-        → return SelectOutcome
-  → else if step.action == "form" + select key:
-      → existing _classify_select_intent → Explorer / legacy
-  → else if step.action == "select":
-      → existing _select_option (legacy, unchanged this round)
-```
+1. scope_candidates = locate_scope_candidates(field_label, option_text)
+     field_label 主路径；失败时 option_text 反推（仅唯一匹配恢复）
+     field={}: 跳过 field_label 定位
 
-**关键约束**：
-- `select_option` 在旧 `form` 的 FieldLocator 之前独立路由 — CTM 问题标题 label 没有 `for`，先走 locator 会直接失败
-- 只有 `ChoiceExplorer.classify()` 一个分类器，不与 `_classify_select_intent()` 双重分类
-- classify 基于 DOM 正向证据（实际发现了 `input[type=radio]` / `[role=radio]`），不是静态推断
-
-### 1.2 _normalize_choice_step 兼容协议
-
-真实仓库中旧格式（仅这两种）：
-
-| 旧格式 | 转换结果 |
-|--------|---------|
-| `{"action":"form","field":{"label":"Coverage Type"},"select":"__random__"}` | `ChoiceIntent(mode="random")` — 必须由 classify DOM 证据决定走 RadioStrategy 还是 dropdown |
-| `{"action":"select","selection_strategy":{"type":"random"}}` | `ChoiceIntent(mode="random")` — 仅 classify 确认 radio 时进入 RadioStrategy；checkbox/card 保留 legacy |
-
-**不能**静态转换旧 `form+select` 为 `select_option`，因为它同时用于 dropdown、radio、rating。必须进入 ChoiceExplorer 由 DOM 决定。
-
-### 1.3 RadioStrategy.execute(intent, frame_id)
-
-```
-1. locate_scope_candidates(field_label, option_text)
-     双路径: field_label 定位问题区域 → 失败时 option_text 反推（仅唯一匹配时恢复）
-2. discover_radio_groups(scopes)
+2. groups = discover_radio_groups(scope_candidates, frame_id)
      scope 逐层: fieldset/legend → 语义容器 → 共同祖先 → 外扩
      native: 按 form owner + name 分组
      ARIA: 按 [role=radiogroup] 分组
-     仅当前可见且 enabled；排除 hidden wizard step、aria-hidden、disabled/aria-disabled
-     隐藏 native input 但关联 label 可见 → 仍是候选
-     role wrapper + 隐藏 native input → 去重为一个逻辑选项
-3. score_and_select_group()
-     评分: option_text 在组内 > legend/aria-labelledby > DOM 距离 > name token（弱证据）
-     并列 → AMBIGUOUS_GROUP，不猜测，零点击
-4. match_option(normalized_exact)
-     规范化: 空白/NBSP/大小写/连字符 → 全文相等
-     不匹配 → OPTION_NOT_FOUND，不退化
-     random 模式跳过此步
-5. read current state → selected_before
-     random 模式已有选择 → ALREADY_SELECTED，不重新随机
-     field={} + exact: 仅通过唯一选项反查
-     field={} + random: 仅选择唯一可见 group
-     多个 Yes/No 组不能仅靠 "No" 猜组
+     可见 + enabled；排除 hidden step、aria-hidden、disabled
+     隐藏 native input + 可见 label → 候选
+     role wrapper + 隐藏 native input → 去重
+
+3. group = score_and_select_group(groups, field_label, option_text)
+     评分: option_text 在组内 > legend/aria-labelledby > DOM 距离 > name token
+     并列 → AMBIGUOUS_GROUP，零点击
+
+4. target = match_option(group, option_text, mode)
+     normalized_exact: 空白/NBSP/大小写/连字符 → 全文相等
+     random: 随机未选中项
+     不匹配 → OPTION_NOT_FOUND
+     random + 全部已选 → ALREADY_SELECTED
+
+5. read selected_before
+
 6. 已选中 → ALREADY_SELECTED（不重复点击）
-7. resolve_activation_target()
+
+7. activation = resolve_activation_target(target)
      input / 祖先 label / label[for]
-8. activate
-     使用唯一 marker（携带 frame_id），click target 与 verify control 使用不同 marker
-     CDP 点击失败 → CLICK_FAILED
-9. shared_verifier.poll(predicate, timeout)
-     native: target input.checked === true + 同组仅一个 checked
-     ARIA: aria-checked === "true"
-     超时 → NOT_VERIFIED
-     finally 中逐 frame 清理所有 marker
-10. return SelectOutcome + evidence
+
+8. click_and_verify(activation, target, group, frame_id)
+     - 生成唯一 click_marker 和 verify_marker（均携带 frame_id token）
+     - CDP click(click_marker)
+     - 检测 click 返回码 → 失败则 CLICK_FAILED
+     - poll_until(predicate, timeout)
+       native: verify_marker.checked === true + 同组唯一 checked
+       ARIA: verify_marker.ariaChecked === "true"
+     - 超时/元素 detached → NOT_VERIFIED
+     - finally: 逐 frame 清理所有 marker（不使用固定 data-probe 字符串）
+
+9. return SelectOutcome(status, evidence)
 ```
 
-**Radio 语义硬编码规则**（不依赖 prompt）：
+**Radio 语义硬编码规则**：
 - 只发现当前可见且 enabled 的组
 - 隐藏 native input + 可见关联 label → 候选
-- role wrapper + 隐藏 native input → 去重
-- Native: 最终验证 target radio checked + 同组只有一个 checked
-- Random 已有选择 → ALREADY_SELECTED
+- role wrapper + 隐藏 native input → 去重为一个逻辑选项
+- Native: target radio checked + 同组仅一个 checked
+- Random + 已有选择 → ALREADY_SELECTED
 - field={}: exact 唯一反查；random 唯一 visible group
-- DOM remount（控件点击后消失）→ 由 shared verifier 检测元素 detached → NOT_VERIFIED
+- 多个 Yes/No 组：仅靠 "No" 不能猜组
+- DOM remount（元素 detached）→ shared verifier 检测 → NOT_VERIFIED
 
 ---
 
-## 二、Shared Verifier 修复
+## 二、Shared Verifier + CDP Click 修复
 
 ### 2.1 当前假阳性
 
 ```python
-// select_explorer.py L227
-"verified" in "not verified"   # → True  ← 错误
-// quiz verify 路径
-"checked" in "not checked"     # → True  ← 错误
+# _select_option() 两处
+"checked" in "not checked"     # → True  ← 错误（保留 legacy，本轮不改 _select_option）
+
+# select_explorer.py L227
+# 已修：精确比较，不再 substring
 ```
 
-### 2.2 修正为结构化返回
+### 2.2 Structured VerifyResult
 
 ```python
 @dataclass
@@ -127,10 +226,33 @@ class VerifyResult:
     evidence: dict       # {before, after, signal_type, signal_value}
 ```
 
-- click target marker 与 verify control marker 不同
-- marker 携带 frame_id token 防串
-- finally 中逐 frame 清理，不使用固定 `data-probe` 字符串
-- 不再使用 `in` 做字符串包含判断
+**Marker 规则**：
+- click target marker 与 verify control marker 使用不同的属性名（防串）
+- marker value 携带 frame_id token
+- 每个 frame 独立分配 token
+- finally 块逐 frame 清理，不留残留
+
+### 2.3 CDP Click Wrapper（新增 `common.py` 或 `click_utils.py`）
+
+```python
+class ClickResult:
+    success: bool
+    error: str | None      # None on success; "not_interactive" / "no_coordinates" / "cdp_error"
+
+def safe_click(cdp, selector: str, frame_id: str = "") -> ClickResult:
+    """CDP click that returns structured result instead of silently failing."""
+    try:
+        cdp.click(selector, frame_id)
+        return ClickResult(success=True, error=None)
+    except Exception as e:
+        return ClickResult(success=False, error=str(e)[:200])
+```
+
+用于产生可靠的 CLICK_FAILED status。
+
+### 2.4 ProbeSession — frame_id 跟踪
+
+`select_explorer.py` 的 `ProbeSession` 需记录每个 marker 属于哪个 frame，`cleanup()` 逐 frame 清理。本条本轮可仅保留 open issue，不影响 RadioStrategy（RadioStrategy 自己管理 marker）。
 
 ---
 
@@ -142,16 +264,16 @@ class VerifyResult:
 SELECTED            — selected_before=false, selected_after=true
 ALREADY_SELECTED    — selected_before=true, 不重复点击
 FIELD_NOT_FOUND     — 问题文字找不到，且无法通过选项反推
-GROUP_NOT_FOUND     — 区域内无可见 radio group
+GROUP_NOT_FOUND     — 区域内无可见 enabled radio group
 OPTION_NOT_FOUND    — 指定 option.text 在 group 内不匹配
 AMBIGUOUS_GROUP     — 多个 group 同分，无法确定
-AMBIGUOUS_CONTROL   — 同一 scope 内存在多种控件类型且无法区分
-CLICK_FAILED        — CDP 点击未发出（不可交互/无坐标/报错）
+AMBIGUOUS_CONTROL   — 多个 control type probe 并存且无法区分
+CLICK_FAILED        — CDP 点击未发出（safe_click 返回 error）
 NOT_VERIFIED        — 点击已发出，超时后状态未变化或元素 detached
-NO_CANDIDATE        — 旧 Explorer 保留，映射至此
-NO_SAFE_TRIGGER     — 旧 Explorer 保留，映射至此
-OPEN_FAILED         — 旧 Explorer 保留，映射至此
-UNSUPPORTED_CONTROL — classify 返回非 radio/native-select/combobox 的控件类型
+NO_CANDIDATE        — 旧 Explorer 状态，映射保留
+NO_SAFE_TRIGGER     — 旧 Explorer 状态，映射保留
+OPEN_FAILED         — 旧 Explorer 状态，映射保留
+UNSUPPORTED_CONTROL — canonical: 无匹配 Strategy Probe
 ```
 
 ### 3.2 Evidence
@@ -173,7 +295,7 @@ UNSUPPORTED_CONTROL — classify 返回非 radio/native-select/combobox 的控�
 ```
 
 - `ok` 仅由 status 派生：`ok = status in {SELECTED, ALREADY_SELECTED}`
-- 所有歧义状态（AMBIGUOUS_GROUP、AMBIGUOUS_CONTROL）零点击
+- 所有歧义状态零点击
 
 ---
 
@@ -186,24 +308,103 @@ UNSUPPORTED_CONTROL — classify 返回非 radio/native-select/combobox 的控�
 | label[for] 关联 radio | rating/star 组件 |
 | 隐藏 native input + 可见 label | 图片卡 / 伪 radio（div 模拟） |
 | | checkbox（留待 CheckboxStrategy） |
-| | Native `<select>` random 分支 |
-| | `_select_option()` 全局 random（留待后续迁移） |
+| | Native `<select>` random |
+| | `_select_option()` 全局 random |
 | | `_try_quiz_group()` 非 radio 路径 |
 | | `quiz_loop()` |
+| | `_smart_form` 全部旧分支（不删，只短路） |
 
-**删除**：`_smart_form` 中仅 native radio + ARIA radio 的 parentElement 随机搜索代码。不删除 chip/card/rating/checkbox 路径。
+**不删除旧分支**。RadioStrategy 正向命中后 `return`，旧代码不执行。
 
 ---
 
-## 五、Prompt 全量变更
+## 五、Prompt + 诊断数据
 
-### 5.1 GENERATE_PROMPT
+### 5.1 新增结构化诊断 `choice_groups`
+
+在 `json_pipeline.py` `_diagnose_page()` 或 `_diagnose_snapshot()` 中新增：
+
+```python
+def _diagnose_choice_groups(cdp, frame_id="") -> list[dict]:
+    """Scan page for radio groups, fieldset/legend, radiogroup with accessible names."""
+    js = """(function(){
+      var groups = [];
+      // Native radio groups by name
+      var seen = {};
+      var radios = document.querySelectorAll('input[type=radio]');
+      radios.forEach(function(r){
+        if (r.disabled || r.closest('[aria-hidden=true]')) return;
+        var name = r.name || r.id || '';
+        if (!name || seen[name]) return;
+        seen[name] = true;
+        var form = r.closest('form');
+        var owner = form ? form.id || '' : '';
+        var fieldset = r.closest('fieldset');
+        var legend = fieldset ? (fieldset.querySelector('legend')||{}).textContent || '' : '';
+        var labels = document.querySelectorAll('label[for="'+r.id+'"]');
+        var labelText = labels.length ? labels[0].textContent.trim() : '';
+        var options = [];
+        var siblings = (form||document).querySelectorAll('input[type=radio][name="'+name+'"]');
+        siblings.forEach(function(s){
+          var optLabel = s.closest('label');
+          var optText = optLabel ? optLabel.textContent.trim() : '';
+          if (!optText && s.id) {
+            var forLabel = document.querySelector('label[for="'+s.id+'"]');
+            optText = forLabel ? forLabel.textContent.trim() : '';
+          }
+          options.push({text: optText, value: s.value, checked: s.checked});
+        });
+        groups.push({
+          label: legend || labelText || '',
+          type: 'native_radio',
+          name: name,
+          owner: owner,
+          options: options
+        });
+      });
+      // ARIA radio groups
+      var ariaGroups = document.querySelectorAll('[role=radiogroup]');
+      ariaGroups.forEach(function(g){
+        if (!g.offsetWidth) return;
+        var label = g.getAttribute('aria-label') || g.getAttribute('aria-labelledby') || '';
+        var ariaRadios = g.querySelectorAll('[role=radio]');
+        var options = [];
+        ariaRadios.forEach(function(r){
+          options.push({
+            text: (r.textContent||'').trim(),
+            value: r.getAttribute('aria-checked')||'',
+            checked: r.getAttribute('aria-checked')==='true'
+          });
+        });
+        groups.push({
+          label: label,
+          type: 'aria_radio',
+          options: options
+        });
+      });
+      return JSON.stringify(groups.slice(0, 10));
+    })()"""
+    raw = cdp.eval(js, frame_id)
+    try:
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except:
+        return []
+```
+
+`page_diag` 新增 choice_groups 段：
+```
+选择组:
+[{"label":"Annual Income Range","type":"native_radio","options":[...]},
+ {"label":"Do you have existing cover?","type":"native_radio","options":[...]}]
+```
+
+### 5.2 GENERATE_PROMPT 变更
 
 **删除**：
-- L62-63: `radio/按钮/选项类选择，直接用 click + find.text...`
-- L68-69: `只有真正的 <select> 下拉框才用 form + select`
+- `radio/按钮/选项类选择，直接用 click + find.text，不要用 form + select！`
+- `只有真正的 <select> 下拉框才用 form + select`
 
-**新增 select_option 章节**（放在动作速查表之后）：
+**新增 select_option 章节**：
 ```
 ### 语义选择 (select_option)
 
@@ -222,51 +423,49 @@ UNSUPPORTED_CONTROL — classify 返回非 radio/native-select/combobox 的控�
 }
 
 规则:
-- field.label 和 option.text 必须复制运营描述或"当前页面可见元素"原文
+- field.label 和 option.text 必须从"当前页面可见元素"的"选择组"中复制原文
   不翻译、不改写、不补充、不修改标点/货币符号/数值范围
 - 没有可靠问题文字时 "field":{}
-  执行器只能通过选项唯一反查或页面唯一可见 choice group 执行
-  否则返回歧义，不猜测
-- 本动作支持: radio group、原生 <select> 下拉框、combobox 下拉框
-- 不支持: checkbox、卡片选择、星级评分（这些继续用 form+check / form+select）
+- 本动作支持: radio group
+- 不支持: checkbox、卡片选择、星级评分、下拉框
+  （这些继续用 form+check / form+select）
 ```
 
-**更新动作速查表**：
-- `选择XXX（选YYY）` → action 从 `form` 改为 `select_option`
-
+**更新动作速查表**：`选择XXX（选YYY）` → `select_option`
 **更新可用 action 白名单**：添加 `select_option`
+**quiz 章节**：保留 `action: "select"` + `selection_strategy`，不改
+**状态机示例**：保留，不改
 
-**更新 quiz 章节**：quiz 随机选项继续用 `action: "select"` + `selection_strategy`
+### 5.3 FIX_PROMPT
 
-**更新状态机示例**：select 步骤保留，不改为 select_option
+新增 select_option 修复指引：option.text 不匹配时检查 choice_groups 中的真实选项文字。
 
-### 5.2 FIX_PROMPT
+### 5.4 _post_fix (json_pipeline.py)
 
-- 新增 select_option 修复指引：option.text 不匹配时检查 snapshot 中的真实选项文字
-- field.label 不匹配时尝试 snapshot 中的问题标题
+```python
+has_choice = any(
+    step.get("action") in {"select", "select_option"}
+    for step in steps
+)
+# 有 select 或 select_option 时不自动插入旧全局 random select
+```
 
-### 5.3 _post_fix (json_pipeline.py)
+### 5.5 auto_fixer.py
 
-- `has_select` 逻辑：跳过 `action="select_option"` 步骤，不自动插入旧全局 random select
-
-### 5.4 auto_fixer.py
-
-- L47: `field.type` 自动补全跳过 `action="select_option"` 步骤
-
-### 5.5 wizard_explorer.py
-
-- 保留 legacy adapter，不迁移。RadioStrategy 不调用 wizard_explorer。
+L47: `field.type` 自动补全跳过 `action="select_option"`。
 
 ---
 
 ## 六、硬约束
 
 - exact 失败 → OPTION_NOT_FOUND，不退化 random
-- 多控件/多分组同分 → AMBIGUOUS_GROUP 或 AMBIGUOUS_CONTROL，零点击
+- 多 Probe/多 group 同分 → AMBIGUOUS，零点击，零 fallback
 - `selected_after ≠ true` → 不能返回 SELECTED
-- random 仅由 `option.mode="random"` 触发（或旧协议经 classify 确认 radio 后）
+- random 仅由 `option.mode="random"` 触发（或 legacy 经 classify 确认 radio 后）
 - ALREADY_SELECTED 不重复点击
 - `ok` 仅由 status 派生
+- canonical unsupported → UNSUPPORTED_CONTROL + 失败，不回退 legacy
+- RadioStrategy 执行后任何失败 → 不回退 legacy
 - 所有歧义状态零点击
 
 ---
@@ -275,76 +474,103 @@ UNSUPPORTED_CONTROL — classify 返回非 radio/native-select/combobox 的控�
 
 | # | 文件 | 变更 |
 |---|------|------|
-| 1 | `src/select_explorer.py` | 新增 RadioStrategy 类；新增 ChoiceExplorer.classify()；扩展 SelectOutcome status 枚举；新增 shared_verifier（结构化 VerifyResult）；修复 L227 substring 假阳性 |
-| 2 | `src/json_executor.py` | `_execute_step()`: 新增 `_normalize_choice_step()` + `action="select_option"` 路由（在 form 分支之前）；删除 `_smart_form()` 中 native radio + ARIA radio 的随机搜索代码；checkbox/card/rating 保留 legacy；旧协议兼容解析 |
-| 3 | `src/json_pipeline.py` | GENERATE_PROMPT: 删除 radio→click 规则，新增 select_option 章节，更新动作表、action 白名单、quiz 章节、状态机示例；FIX_PROMPT: 新增 select_option 修复指引；_post_fix: has_select 跳过 select_option |
-| 4 | `src/auto_fixer.py` | L47: type 自动补全跳过 select_option |
-| 5 | `tests/test_choice_explorer_unit.py` | **新增** — RadioStrategy 单元测试（详见验收用例） |
-| 6 | `tests/test_select_option_compat.py` | **新增** — 旧协议兼容测试 |
-| 7 | `tests/test_radio_strategy_ctm.py` | **新增** — CTM 集成测试（直接用 JSONExecutor，不走 web_editor） |
+| 1 | `src/select_explorer.py` | 新增 `StrategyProbe`、`NormalizedChoice`、`RadioStrategy`（含 `.probe()` + `.execute()`）、`DropdownStrategy.probe()`、`ChoiceExplorer`（probe→arbitrate→dispatch）；扩展 `SelectOutcome`；`VerifyResult` |
+| 2 | `src/json_executor.py` | `_execute_step()`: 新增 `_normalize_choice_request()` + `action="select_option"` 路由（在 form 分支前）；RadioStrategy 正向命中短路 `_smart_form`（不删旧代码）；旧 `_select_option` "checked" substring 假阳性标记 FIXME |
+| 3 | `src/json_pipeline.py` | 新增 `_diagnose_choice_groups()`；GENERATE_PROMPT: 删除 radio→click 规则，新增 select_option 章节，更新动作表、白名单；FIX_PROMPT: select_option 修复指引；`_post_fix`: 精确 `has_choice` 逻辑 |
+| 4 | `src/auto_fixer.py` | L47: 跳过 `select_option` 步骤的 type 补全 |
+| 5 | `src/common.py` | 新增 `ClickResult` + `safe_click()` — CDP click 结构化返回，支持 CLICK_FAILED |
+| 6 | `tests/conftest.py` | **新增** — pytest fixtures: CDP mock, frame helpers, test page loaders |
+| 7 | `tests/fixtures/radio-groups.html` | **新增** — 独立 radio 测试页（native/ARIA/label-for/hidden/disabled/YesNo×2/iframe） |
+| 8 | `tests/test_choice_explorer.py` | **新增** — 20 个单元测试 |
+| 9 | `tests/test_select_option_compat.py` | **新增** — 5 个兼容测试 |
+| 10 | `tests/test_select_option_pipeline.py` | **新增** — Prompt/_post_fix/auto_fixer 集成测试 |
+| 11 | `tests/test_radio_strategy_ctm.py` | **新增** — CTM 集成测试，使用 `MOCK_BASE_URL`/`WS_URL` 环境变量，每例 reload/reset |
+| 12 | `requirements-dev.txt` | **新增** — pytest 及相关依赖 |
 
-**不改变**：`locator.py`、`element_finder.py`、`wizard_explorer.py`
+**不改变**：`locator.py`、`element_finder.py`、`wizard_explorer.py`、`_smart_form` 旧分支
 
 ---
 
 ## 八、验收用例
 
-### 单元测试 (test_choice_explorer_unit.py)
+### 单元测试 (tests/test_choice_explorer.py)
 
-| ID | 用例 | 输入 | 期望 status |
-|----|------|------|-------------|
-| U1 | native radio exact 匹配 | `field={label:"Annual Income Range"}, option={mode:"exact",text:"$30k-$60k"}` | SELECTED |
-| U2 | native radio exact 不匹配 | 同上, text="$100k+" | OPTION_NOT_FOUND |
-| U3 | native radio random | `field={label:"Coverage Type"}, option={mode:"random"}` | SELECTED |
-| U4 | native radio random 已有选择 | 同上，group 内已有 checked radio | ALREADY_SELECTED |
-| U5 | ARIA radio exact 匹配 | `[role=radio]` 结构 | SELECTED, verification_signal=aria_checked |
-| U6 | label[for] 关联 radio | label htmlFor 指向 radio id | SELECTED, activation_target=label_for |
-| U7 | 隐藏 native input + 可见 label | input offsetWidth=0, label 可见 | SELECTED |
-| U8 | role wrapper + 隐藏 native input 去重 | 同时存在 [role=radio] 和隐藏 input | 去重为一个逻辑选项，SELECTED |
-| U9 | 两个 Yes/No 组（仅 option.text="No"） | 两个 group 都有 "No" 选项 | AMBIGUOUS_GROUP |
-| U10 | field={} + option 唯一反查 | 整个页面仅一个 radio group 包含此选项 | SELECTED, discovery_method=option_unique_reverse |
-| U11 | field={} + 多个 group | 多个 group 都含此选项 | AMBIGUOUS_GROUP |
-| U12 | field={} + random + 唯一 group | 页面仅一个可见 radio group | SELECTED |
-| U13 | field={} + random + 多个 group | 多个可见 radio group | AMBIGUOUS_GROUP |
-| U14 | disabled radio group | 所有 input 带 disabled | GROUP_NOT_FOUND |
-| U15 | 隐藏 wizard step radio | 不可见 step 内的 radio | GROUP_NOT_FOUND（不被发现） |
-| U16 | 点击无状态变化 | CDP click 成功，checked 不变 | NOT_VERIFIED |
-| U17 | CDP click 报错 | 元素不可交互 | CLICK_FAILED |
-| U18 | iframe 内 radio | radio 在 childFrame 中 | SELECTED（frame_id 全链传递） |
-| U19 | checkbox 不被拦截 | action=select_option, 页面只有 checkbox | UNSUPPORTED_CONTROL，fall through legacy |
-| U20 | card/rating 不被拦截 | 页面只有 .chip 卡片 | UNSUPPORTED_CONTROL，fall through legacy |
+使用 `tests/fixtures/radio-groups.html`：
 
-### 兼容测试 (test_select_option_compat.py)
+| ID | 用例 | 期望 status |
+|----|------|-------------|
+| U1 | native radio exact 匹配 | SELECTED, discovery=field_scope, match=normalized_exact |
+| U2 | native radio exact 不匹配 | OPTION_NOT_FOUND, 选择前后 DOM 状态完全不变 |
+| U3 | native radio random | SELECTED |
+| U4 | native radio random 已有选择 | ALREADY_SELECTED |
+| U5 | ARIA radio exact 匹配 | SELECTED, verification_signal=aria_checked |
+| U6 | label[for] 关联 radio | SELECTED, activation_target=label_for |
+| U7 | 隐藏 native input + 可见 label | SELECTED |
+| U8 | role wrapper + 隐藏 native input 去重 | SELECTED，去重为一个逻辑选项 |
+| U9 | 两个 Yes/No 组, option.text="No" | AMBIGUOUS_GROUP, 零点击 |
+| U10 | field={} + 选项唯一反查 | SELECTED, discovery=option_unique_reverse |
+| U11 | field={} + 多个 group 含此选项 | AMBIGUOUS_GROUP |
+| U12 | field={} + random + 唯一 group | SELECTED |
+| U13 | field={} + random + 多个 group | AMBIGUOUS_GROUP |
+| U14 | disabled radio group | GROUP_NOT_FOUND |
+| U15 | hidden wizard step radio | GROUP_NOT_FOUND |
+| U16 | 点击后 checked 不变 | NOT_VERIFIED, reason=state_unchanged |
+| U17 | CDP click 报错 | CLICK_FAILED |
+| U18 | iframe 内 radio | SELECTED, frame_id 全链传递 |
+| U19 | canonical select_option + 仅 checkbox | UNSUPPORTED_CONTROL, 零点击, 不回退 |
+| U20 | canonical select_option + 仅 .chip 卡片 | UNSUPPORTED_CONTROL, 零点击, 不回退 |
+| U21 | mixed radio + checkbox 页面 | AMBIGUOUS_CONTROL, 零点击 |
+| U22 | invalid mode | 解析层报错 |
+| U23 | exact 缺 text | 解析层报错 |
+| U24 | random 带了 text | 解析层报错 |
 
-| ID | 用例 | 旧协议输入 | 期望 |
-|----|------|-----------|------|
-| C1 | form+select __random__ → classify radio | `{"action":"form","field":{"label":"Coverage Type"},"select":"__random__"}`, DOM 有 radio | normalize → ChoiceIntent(random) → classify → RADIO_GROUP → RadioStrategy → SELECTED |
-| C2 | form+select __random__ → classify dropdown | 同上, DOM 是 native `<select>` | normalize → ChoiceIntent(random) → classify → NATIVE_SELECT → SelectExplorer |
-| C3 | action=select random → radio | `{"action":"select","selection_strategy":{"type":"random"}}`, DOM 有 radio | classify → RADIO_GROUP → RadioStrategy |
-| C4 | action=select random → checkbox | 同上, DOM 是 checkbox | UNSUPPORTED_CONTROL → legacy _select_option |
-| C5 | 连续两题 marker 不串 | 先 select_option Q1, 再 select_option Q2 | Q1 marker 在 Q2 执行前已清理；Q2 不受 Q1 残留 marker 影响 |
+### 兼容测试 (tests/test_select_option_compat.py)
 
-### 集成测试 (test_radio_strategy_ctm.py)
+| ID | 用例 | 期望 |
+|----|------|------|
+| C1 | legacy form+select `__random__` + DOM 确认 radio | normalize(legacy) → ChoiceExplorer → RadioStrategy → SELECTED |
+| C2 | legacy form+select `__random__` + DOM 是 native `<select>` | normalize(legacy) → DropdownStrategy probe → SelectExplorer |
+| C3 | legacy form+select `"No"` (exact) + DOM 确认 radio | normalize(legacy, exact) → RadioStrategy → SELECTED |
+| C4 | legacy action=select random + DOM 确认 radio | normalize(legacy) → RadioStrategy → SELECTED |
+| C5 | legacy action=select random + DOM 仅 checkbox | UNSUPPORTED_CONTROL → legacy fallback `_select_option()` |
+| C6 | 连续两题 marker 不串（Q1→Q2） | Q2 不受 Q1 残留 marker 影响 |
+| C7 | RadioStrategy 成功后不回退 legacy | 不再执行 `_smart_form` |
 
-直接用 `JSONExecutor` 执行固定 JSON，不走 web_editor：
+### Pipeline 测试 (tests/test_select_option_pipeline.py)
+
+| ID | 用例 | 期望 |
+|----|------|------|
+| P1 | LLM 对"选择问题 XXX(选YYY)"生成 select_option | action=select_option, option.mode=exact |
+| P2 | LLM 对"选随机"生成 select_option random | option.mode=random |
+| P3 | LLM 保留 linear/no-translate 规则 | 编号步骤仍用线性模式，不翻译 |
+| P4 | _post_fix 有 select_option 时不插入全局 random select | has_choice=True, 不触发补丁 |
+| P5 | auto_fixer 跳过 select_option 的 type 补全 | field 无 type 字段 |
+
+### 集成测试 (tests/test_radio_strategy_ctm.py)
+
+使用 `MOCK_BASE_URL` / `WS_URL` / `CDP_PATH` 环境变量，每例 reload/reset：
 
 | ID | 用例 | 断言 |
 |----|------|------|
-| I1 | Annual Income Range → $30k-$60k | target radio.checked === true |
-| I2 | Do you have existing cover? → No | target radio.checked === true |
+| I1 | Annual Income Range → `$30k-$60k` | target radio.checked === true |
+| I2 | Do you have existing cover? → `No` | target radio.checked === true |
 | I3 | Coverage Type → random | 组内有且仅有一个 radio checked |
-
-CTM mock 在 `192.168.1.51:8080`，radio 页在 `/ctm/health_quote_v4.jsp`。
+| I4 | 不存在选项 `$100k+` | 返回失败，DOM 状态完全不变 |
+| I5 | Ant Design / React Select / MUI Select 回归 | 下拉框选择不受影响 |
 
 ### 人工 smoke
 
-VNC 观察 CTM 全流程：Coverage Type → Annual Income Range → DOB → Existing Cover → ... → results 页。
+VNC 观察 CTM 全流程跑通到 results 页。
 
 ---
 
 ## 九、验证步骤
 
-1. `python -m pytest tests/test_choice_explorer_unit.py -v`
-2. `python -m pytest tests/test_select_option_compat.py -v`
-3. `python -m pytest tests/test_radio_strategy_ctm.py -v`
-4. 人工：web_editor 5000 跑 CTM description，VNC 确认 radio 选中生效
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/test_choice_explorer.py -v
+python -m pytest tests/test_select_option_compat.py -v
+python -m pytest tests/test_select_option_pipeline.py -v
+MOCK_BASE_URL=http://192.168.1.51:8080 WS_URL=ws://127.0.0.1:9222/... \
+  python -m pytest tests/test_radio_strategy_ctm.py -v
+```
