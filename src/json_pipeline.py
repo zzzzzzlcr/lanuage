@@ -84,6 +84,8 @@ class JSONPipeline:
 ### 2. 填表单
 - 有id提示: {"action":"form","find":{"id":"输入框id"},"value":"{{变量}}"} ← 运营写了id就必须用find.id！
 - 普通: {"action":"form","field":{"label":"标签","type":"推断类型"},"value":"{{变量}}"}
+- **运营写了placeholder必须原样保留**: 填 Email(placeholder=Email address) → {"field":{"label":"Email","type":"email","placeholder":"Email address"}}
+- **运营写了name必须原样保留**: 填 Country(name=stateResidency) → {"field":{"label":"Country","name":"stateResidency"}}
 - iframe里: 加 "frame_url":"URL关键词" (只用域名部分, 如"entyrecare"不用"forms.entyrecare")
 - type推断: email→email, phone/手机→tel, password/密码→password, name/姓名→text
 - 运营描述里有"输入框id=xxx"或"id=xxx"时，必须用find.id方式，不要用field.label
