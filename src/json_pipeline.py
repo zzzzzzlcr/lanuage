@@ -62,6 +62,12 @@ class JSONPipeline:
 **运营给了编号步骤（1.2.3...）→ 必须用线性模式（"steps":[...]），绝对不准用 loop_until 状态机！**
 **只有运营明确写"when_XXX"或"loop_until"时才用状态机。**
 **运营明确写了具体选择值（如"选择Single Male"）→ 必须用那个精确值，不准改成 __random__！**
+**如果提示里有"当前页面可见元素"，field.label 必须从里面的文字摘取，不准自己翻译！**
+**radio/按钮/选项类选择，直接用 click + find.text，不要用 form + select！**
+**例: "选择Single Male" → {"action":"click","find":{"text":"Single Male"}}**
+**例: "选择$30k-$60k" → {"action":"click","find":{"text":"$30k-$60k"}}**
+**只有真正的 <select> 下拉框才用 form + select。**
+**例: 页面上是"Coverage Type"→ label:"Coverage Type"，不准写成"Gender"**
 
 ### 0. 动词→动作速查（必读！）
 运营描述中的动词对应唯一的 action 类型，不要自己编造新 action：

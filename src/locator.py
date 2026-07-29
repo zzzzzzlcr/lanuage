@@ -341,7 +341,7 @@ class FieldLocator:
         # Count how many visible matches
         js = (
             f"(function(){{var els=document.querySelectorAll('{selector}');var c=0;"
-            f"for(var i=0;i<els.length;i++){{if(els[i].tabIndex!==-1&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))c++;}}"
+            f"for(var i=0;i<els.length;i++){{if((els[i].tagName!=='INPUT'||els[i].tabIndex!==-1)&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))c++;}}"
             f"return c;}})()"
         )
         raw = self.cdp.eval(js, frame_id)
@@ -372,7 +372,7 @@ class FieldLocator:
         marker = f"tpm{hash(ftype)%10000}"
         js_mark = (
             f"(function(){{var els=document.querySelectorAll('{selector}');var n=0;"
-            f"for(var i=0;i<els.length;i++){{if(els[i].tabIndex!==-1&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name)){{"
+            f"for(var i=0;i<els.length;i++){{if((els[i].tagName!=='INPUT'||els[i].tabIndex!==-1)&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name)){{"
             f"els[i].setAttribute('data-{marker}',String(n));n++;}}}}"
             f"return n;}})()"
         )
