@@ -101,7 +101,7 @@ class CDPHelper:
             timeout_ms: Timeout in milliseconds
 
         Returns:
-            Command output (stdout + stderr)
+            Command output
         """
         cmd = [CDP_PATH, "click", "--selector", selector]
         if frame_id:
@@ -117,43 +117,6 @@ class CDPHelper:
             timeout=timeout_s,
         )
         return result.stdout + result.stderr
-
-
-def click_checked(cdp, selector: str, frame_id: str = "", timeout_ms: int = 3000):
-    """Structured CDP click. Checks subprocess returncode, timeout, and stderr.
-
-    Returns ClickResult(success, error, error_type).
-    Does NOT silently swallow click failures.
-    """
-    from select_explorer import ClickResult
-    cmd = [CDP_PATH, "click", "--selector", selector]
-    if frame_id:
-        cmd.extend(["--frame-id", frame_id])
-    cmd.extend(["--host", cdp.host, "--port", cdp.port])
-
-    try:
-        result = subprocess.run(
-            cmd,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=max(timeout_ms / 1000.0, CDP_TIMEOUT),
-        )
-        if result.returncode != 0:
-            return ClickResult(
-                success=False,
-                error=result.stderr or result.stdout or f"exit code {result.returncode}",
-                error_type="cdp_error",
-            )
-        output = result.stdout + result.stderr
-        # Check for CDP-level error indicators
-        if "Error" in output or "Exception" in output:
-            return ClickResult(success=False, error=output[:200], error_type="cdp_error")
-        return ClickResult(success=True)
-    except subprocess.TimeoutExpired:
-        return ClickResult(success=False, error="click timeout", error_type="timeout")
-    except Exception as e:
-        return ClickResult(success=False, error=str(e)[:200], error_type="exception")
 
     def eval(self, script: str, frame_id: str = "") -> str:
         """
@@ -574,3 +537,40 @@ CDP_USAGE_GUIDE = """
   - 下拉选择器必须用select参数，不能用value参数
   - iframe内的所有操作都必须传frame_id
 """
+
+
+def click_checked(cdp, selector: str, frame_id: str = "", timeout_ms: int = 3000):
+    """Structured CDP click. Checks subprocess returncode, timeout, and stderr.
+
+    Returns ClickResult(success, error, error_type).
+    Does NOT silently swallow click failures.
+    """
+    from select_explorer import ClickResult
+    import subprocess as _subprocess
+    cmd = [CDP_PATH, "click", "--selector", selector]
+    if frame_id:
+        cmd.extend(["--frame-id", frame_id])
+    cmd.extend(["--host", cdp.host, "--port", cdp.port])
+
+    try:
+        result = _subprocess.run(
+            cmd,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=max(timeout_ms / 1000.0, CDP_TIMEOUT),
+        )
+        if result.returncode != 0:
+            return ClickResult(
+                success=False,
+                error=result.stderr or result.stdout or f"exit code {result.returncode}",
+                error_type="cdp_error",
+            )
+        output = result.stdout + result.stderr
+        if "Error" in output or "Exception" in output:
+            return ClickResult(success=False, error=output[:200], error_type="cdp_error")
+        return ClickResult(success=True)
+    except _subprocess.TimeoutExpired:
+        return ClickResult(success=False, error="click timeout", error_type="timeout")
+    except Exception as e:
+        return ClickResult(success=False, error=str(e)[:200], error_type="exception")
