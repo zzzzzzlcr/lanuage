@@ -193,10 +193,28 @@ class SelectExplorer:
                                          attempts=attempts)
                 target_text = matches[0]
 
-            # 8. Click option by text
+            # 8. Click option by text — search within the trigger's dropdown region
+            trigger_esc = trigger_marker.replace("'", "\\'")
             escaped = target_text.replace("'", "\\'")
+            # Try to find the dropdown container associated with the trigger
+            region_js = (
+                f"(function(){{var t=document.querySelector('{trigger_esc}');if(!t)return'';"
+                # Prefer aria-controls/owns linked region
+                f"var cid=t.getAttribute('aria-controls')||t.getAttribute('aria-owns');"
+                f"if(cid){{var r=document.getElementById(cid);if(r){{r.setAttribute('data-probe','region');return'[data-probe=region]';}}}}"
+                # Fallback: find nearest visible dropdown/menu sibling or child
+                f"var area=t.closest('[class*=form-item],fieldset,div');"
+                f"if(!area)area=t.parentElement;"
+                f"var dd=area.querySelector('[class*=dropdown],[class*=menu],[class*=popup],[class*=select],"
+                f"[role=listbox],[role=menu]');"
+                f"if(dd&&dd.offsetWidth>0){{dd.setAttribute('data-probe','region');return'[data-probe=region]';}}"
+                f"return'';}})()"
+            )
+            region_sel = str(self.cdp.eval(region_js)).strip().strip('"')
+            scope = region_sel if region_sel and region_sel.startswith('[') else "document"
             opt_js = (
-                f"(function(){{var els=document.querySelectorAll('div,span,li,button,[role=option],option');"
+                f"(function(){{var scope={scope};"
+                f"var els=scope.querySelectorAll('div,span,li,button,[role=option],option');"
                 f"for(var i=0;i<els.length;i++){{"
                 f"if(els[i].textContent.trim()==='{escaped}'&&els[i].offsetWidth>0){{"
                 f"els[i].setAttribute('data-probe','selected');els[i].click();return'clicked';}}}}"
@@ -220,14 +238,14 @@ class SelectExplorer:
                 f"if(!area)return'not verified';"
                 f"var hidden=area.querySelector('input[type=hidden]');"
                 f"if(hidden&&hidden.value.toLowerCase().indexOf('{target_lower}')!==-1)return'verified';"
-                f"return'not verified';}})()"
+                f"return'no';}})()"
             )
-            verified = self.cdp.eval(verify_js)
+            verified = str(self.cdp.eval(verify_js)).strip().strip('"')
 
-            if "verified" in str(verified):
+            if verified == "verified":
                 return SelectOutcome("SELECTED", selected_text=target_text, attempts=attempts)
             return SelectOutcome("NOT_VERIFIED", attempts=attempts,
-                                 evidence={"verify": str(verified)})
+                                 evidence={"verify": verified})
 
     def _try_native(self, marker: str, intent: SelectIntent) -> SelectOutcome | None:
         """If anchor is a native <select>, use cdp.form. Returns None if not native."""

@@ -905,20 +905,28 @@ class JSONExecutor:
             f"var vis=0;for(var i=0;i<radios.length;i++){{if(radios[i].offsetWidth>0)vis++;}}"
             f"var sel=area.querySelector('select');"
             f"var cb=area.querySelector('[role=combobox]');"
+            # Placeholder-like text suggests an unselected dropdown (not a radio/checkbox group)
+            f"var txt=(area.textContent||'').toLowerCase();"
+            f"var placeholder=/select|choose|pick|country|state|province|city|region|language|currency/i.test(txt);"
             f"return JSON.stringify({{has_native_select:!!sel,has_aria_combobox:!!cb,"
-            f"has_visible_choice_group:vis>=2,has_single_trigger:!vis||vis<2}});}})()"
+            f"has_visible_choice_group:vis>=2,has_single_trigger:!vis||vis<2,"
+            f"has_placeholder_like_text:placeholder}});}})()"
         )
         raw = self.cdp.eval(js)
         try:
             probe = json.loads(raw) if isinstance(raw, str) else raw
         except Exception:
             probe = {}
+        # Strong evidence: native select or aria combobox
         if probe.get("has_native_select") or probe.get("has_aria_combobox"):
             return "DROPDOWN"
+        # Choice group: visible radio/checkbox in the area
         if probe.get("has_visible_choice_group"):
             return "CHOICE_GROUP"
-        if probe.get("has_single_trigger"):
+        # Soft evidence: single trigger + placeholder-like text suggests custom dropdown
+        if probe.get("has_single_trigger") and probe.get("has_placeholder_like_text"):
             return "DROPDOWN"
+        # UNKNOWN: let existing _smart_form handle it
         return "UNKNOWN"
 
     def _normalize_explorer_candidates(self, loc) -> list:
