@@ -40,9 +40,9 @@ class VariableResolver:
                 return str(self.profile[mapped])
             if key in self.profile and self.profile[key]:
                 return str(self.profile[key])
-            # Fallback: try as random generator
-            return self._random(key)
-            return str(self.profile.get(key, match.group(0)))
+            # Fallback: try as random generator (with alias)
+            gen = self.RANDOM_ALIASES.get(key, key)
+            return self._random(gen)
 
         return re.sub(r'\{\{(.+?)\}\}', _replace, value)
 
