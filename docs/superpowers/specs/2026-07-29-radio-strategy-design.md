@@ -22,66 +22,169 @@ CTM 的 "Annual Income Range → $30k-$60k"、 "Do you have existing cover? → 
 - 本轮 canonical `select_option` **仅支持 radio**；dropdown 继续走 `form+select`
 - RadioStrategy 正向命中后短路旧逻辑；**不删除** `_smart_form` 旧分支（等其他 Strategy 迁完再删）
 
-### 1.1 Strategy Probe 接口（解决 classify↔locate 循环依赖）
+### 1.1 Execution Context（统一接口入口）
 
-每个 Strategy 先产生结构化 Probe，ChoiceExplorer 再基于所有 Probe 分类。解耦分类与定位：
+```python
+@dataclass
+class ExecutionContext:
+    cdp: CDPHelper
+    locator: FieldLocator
+    frame_id: str
+    log: logging.Logger
+    marker_session: MarkerSession  # per-request unique token, tracks markers per frame
+```
+
+### 1.2 Strategy Probe 接口（解决 classify↔locate 循环依赖）
+
+每个 Strategy 先产生结构化 Probe，ChoiceExplorer 再基于所有 Probe 分类。所有方法消费同一 context：
 
 ```python
 @dataclass
 class StrategyProbe:
-    kind: str              # "native_radio" | "aria_radio" | "native_select" | "combobox" | "unsupported"
-    candidates: list       # radio: list of GroupRef; dropdown: list of CandidateRef
+    kind: str              # "native_radio" | "aria_radio" | "native_select" | "combobox"
+    candidates: list       # radio: list[GroupRef]; dropdown: list[CandidateRef]
     frame_id: str
     confidence: float      # 0.0-1.0, 基于 DOM 正向证据
     evidence: dict
 
+@dataclass
+class GroupRef:
+    """A discovered radio group."""
+    group_type: str        # "native_radio" | "aria_radio"
+    name: str              # native: input.name; ARIA: group label
+    owner_form_id: str     # native: closest form id (grouping key)
+    scope_selector: str    # CSS selector for the minimal container
+    options: list[OptionRef]  # individual radio options
+    frame_id: str
+
+@dataclass
+class OptionRef:
+    text: str              # accessible name (label textContent / aria-label / value)
+    value: str             # input.value or aria value
+    input_selector: str    # unique marker for this option's input element
+    activation_selector: str  # unique marker for the clickable target (label / input)
+    checked: bool
+    enabled: bool
+    visible: bool
+
 class RadioStrategy:
     @staticmethod
-    def probe(intent: ChoiceIntent, frame_id: str) -> StrategyProbe | None:
+    def probe(intent: ChoiceIntent, ctx: ExecutionContext) -> StrategyProbe | None:
         """Single JS eval — scan for input[type=radio]/[role=radio] groups.
-        Returns None if no radio groups found. Does NOT call FieldLocator."""
+        Returns None if no visible enabled radio groups found.
+        Does NOT call FieldLocator. Probe is read-only."""
+        ...
+
+    @staticmethod
+    def execute(intent: ChoiceIntent, probe: StrategyProbe, ctx: ExecutionContext) -> SelectOutcome:
+        """Consume probe's pre-discovered GroupRef/OptionRef.
+        Must NOT re-scan the full page. Only operates within probe.candidates scopes."""
         ...
 
 class DropdownStrategy:
     @staticmethod
-    def probe(intent: ChoiceIntent, frame_id: str) -> StrategyProbe | None:
-        """Uses FieldLocator to find CandidateRef for native <select>/[role=combobox].
+    def probe(intent: ChoiceIntent, ctx: ExecutionContext) -> StrategyProbe | None:
+        """Uses ctx.locator to find CandidateRef for native <select>/[role=combobox].
         Returns None if no candidates."""
+        ...
+
+    @staticmethod
+    def execute(intent: ChoiceIntent, probe: StrategyProbe, ctx: ExecutionContext) -> SelectOutcome:
+        """Delegates to SelectExplorer with probe's pre-discovered candidates."""
         ...
 ```
 
-### 1.2 ChoiceExplorer 分发流程
+### 1.3 ChoiceExplorer 分发流程（只仲裁，不亲自执行 legacy）
 
 ```python
+class ChoiceResult(Enum):
+    HANDLED = "handled"           # Strategy executed, outcome returned
+    DEFER_LEGACY = "defer_legacy" # RadioStrategy not applicable, caller continues old path
+    AMBIGUOUS = "ambiguous"       # Multiple conflicting probes, zero click
+    INVALID = "invalid"           # Malformed intent (parse error)
+    UNSUPPORTED = "unsupported"   # No matching probe, canonical origin
+
 class ChoiceExplorer:
-    def execute(self, request: NormalizedChoice, frame_id: str = "") -> SelectOutcome:
-        # Step 1: 收集所有 Strategy Probe
+    def execute(self, request: NormalizedChoice, ctx: ExecutionContext) -> tuple[ChoiceResult, SelectOutcome | None]:
+        # Step 1: strict validation
+        if not self._validate_intent(request.intent):
+            return (ChoiceResult.INVALID, SelectOutcome(status=INVALID_INTENT, ok=False))
+
+        # Step 2: collect Probes (only RadioStrategy this round)
         probes = []
-        for strategy in [RadioStrategy, DropdownStrategy]:
-            p = strategy.probe(request.intent, frame_id)
-            if p:
-                probes.append(p)
+        rp = RadioStrategy.probe(request.intent, ctx)
+        if rp:
+            probes.append(rp)
 
-        # Step 2: 仲裁
-        resolution = self._arbitrate(probes, request)
+        # Step 3: arbitrate — at most one probe type this round
+        if len(probes) == 0:
+            if request.origin == "canonical":
+                return (ChoiceResult.UNSUPPORTED, SelectOutcome(status=UNSUPPORTED_CONTROL, ok=False))
+            else:
+                return (ChoiceResult.DEFER_LEGACY, None)
 
-        # Step 3: 分发
-        if resolution.can_execute:
-            outcome = resolution.strategy.execute(request.intent, resolution.probe, frame_id)
-            self._cleanup_markers(frame_id)
-            return outcome
-        elif request.origin == "legacy":
-            return self._fallback_legacy(request)
-        else:
-            return SelectOutcome(status=UNSUPPORTED_CONTROL, ok=False)
+        if len(probes) > 1:
+            return (ChoiceResult.AMBIGUOUS, SelectOutcome(status=AMBIGUOUS_CONTROL, ok=False))
+
+        # Step 4: execute the single strategy
+        probe = probes[0]
+        outcome = RadioStrategy.execute(request.intent, probe, ctx)
+        ctx.marker_session.cleanup_all_frames()
+        return (ChoiceResult.HANDLED, outcome)
+
+    def _validate_intent(self, intent: ChoiceIntent) -> bool:
+        """Discriminated union validation."""
+        if intent.mode == "exact":
+            return bool(intent.option and intent.option.strip())
+        elif intent.mode == "random":
+            return intent.option is None
+        return False  # unknown mode
 ```
 
-**仲裁规则**：
-- 单一 Probe 且 confidence > 0 → 执行
-- 多个 Probe → AMBIGUOUS_CONTROL，零点击
-- 零 Probe → origin=canonical: UNSUPPORTED_CONTROL；origin=legacy: fallback
+### 1.4 路由表（_execute_step 中的固定分支）
 
-### 1.3 Request Origin 模型
+```
+step.action == "select_option":
+    request = normalize_choice_request(step)     # origin=canonical
+    result, outcome = ChoiceExplorer.execute(request, ctx)
+    if result == ChoiceResult.HANDLED:
+        return outcome.ok        # success or fail — no fallback
+    elif result == ChoiceResult.UNSUPPORTED:
+        return False             # canonical unsupported → fail closed
+    elif result == ChoiceResult.INVALID:
+        return False             # malformed protocol → fail closed
+    elif result == ChoiceResult.AMBIGUOUS:
+        return False             # ambiguous → fail closed
+
+step.action == "form" and "select" in step:
+    request = normalize_choice_request(step)     # origin=legacy
+    result, outcome = ChoiceExplorer.execute(request, ctx)
+    if result == ChoiceResult.HANDLED:
+        return outcome.ok        # RadioStrategy handled it
+    elif result == ChoiceResult.DEFER_LEGACY:
+        pass  # fall through to existing form handler below
+    elif result == ChoiceResult.AMBIGUOUS:
+        return False             # ambiguous → fail closed
+    elif result == ChoiceResult.INVALID:
+        pass  # fall through to legacy (old protocol may still work)
+    # Continue to existing form handler (FieldLocator → _smart_form)
+    ...
+
+step.action == "select":
+    strategy = step.get("selection_strategy", {}).get("type", "")
+    if strategy == "random":
+        request = normalize_choice_request(step)   # origin=legacy
+        result, outcome = ChoiceExplorer.execute(request, ctx)
+        if result == ChoiceResult.HANDLED:
+            return outcome.ok
+        elif result == ChoiceResult.DEFER_LEGACY:
+            pass  # fall through to _select_option
+    # first / match_text / container / control_types → never probe, stay legacy
+    # Continue to existing _select_option(step)
+    ...
+```
+
+### 1.5 Request Origin 模型
 
 ```python
 @dataclass
@@ -90,12 +193,13 @@ class NormalizedChoice:
     origin: str           # "canonical" | "legacy"
     original_step: dict   # legacy 时保存原始 step，canonical 时为 None
 
-def normalize_choice_request(step: dict) -> NormalizedChoice:
+def normalize_choice_request(step: dict) -> NormalizedChoice | None:
     action = step.get("action", "")
     if action == "select_option":
-        # Canonical — new protocol
-        mode = step["option"]["mode"]
-        text = step["option"].get("text") if mode == "exact" else None
+        # Canonical — new protocol. Strict parse: fail on malformed.
+        opt = step.get("option", {})
+        mode = opt.get("mode", "")
+        text = opt.get("text") if mode == "exact" else None
         return NormalizedChoice(
             intent=ChoiceIntent(
                 label=step.get("field", {}).get("label", ""),
@@ -106,7 +210,8 @@ def normalize_choice_request(step: dict) -> NormalizedChoice:
             original_step=None,
         )
     elif action == "form" and "select" in step:
-        # Legacy — old form+select (could be radio, dropdown, or rating)
+        # Legacy — old form+select. Only probe RadioStrategy; if not radio,
+        # DEFER_LEGACY continues to existing form handler (FieldLocator → _smart_form).
         sel = step["select"]
         if sel == "__random__":
             return NormalizedChoice(
@@ -119,7 +224,6 @@ def normalize_choice_request(step: dict) -> NormalizedChoice:
                 original_step=step,
             )
         else:
-            # Exact: "No", "$30k-$60k" — treat as exact intent
             return NormalizedChoice(
                 intent=ChoiceIntent(
                     label=step.get("field", {}).get("label", ""),
@@ -130,20 +234,26 @@ def normalize_choice_request(step: dict) -> NormalizedChoice:
                 original_step=step,
             )
     elif action == "select":
-        # Legacy — action=select (quiz random)
-        return NormalizedChoice(
-            intent=ChoiceIntent(label="", mode="random", option=None),
-            origin="legacy",
-            original_step=step,
-        )
+        # Legacy — action=select. Only "random" strategy probes RadioStrategy.
+        # "first" / "match_text" / container / control_types → never probe, stay legacy.
+        strategy_type = step.get("selection_strategy", {}).get("type", "")
+        if strategy_type == "random":
+            return NormalizedChoice(
+                intent=ChoiceIntent(label="", mode="random", option=None),
+                origin="legacy",
+                original_step=step,
+            )
+        return None  # non-random → skip ChoiceExplorer entirely
     return None  # not a choice step
 ```
 
 **回退规则**（硬编码，不可配置）：
-- origin=canonical + unsupported → UNSUPPORTED_CONTROL，零点击，失败
-- origin=canonical + RadioStrategy 执行后任何失败 → 禁止 legacy fallback，返回 Outcome
-- origin=legacy + RadioStrategy 确认 radio 并执行后 → 禁止 legacy fallback
-- origin=legacy + unsupported（checkbox/card/rating）→ 使用 original_step 回退旧路径
+- canonical + UNSUPPORTED/INVALID/AMBIGUOUS → 失败关死，零点击
+- canonical + RadioStrategy 执行后任何失败 → 禁止 legacy fallback
+- legacy + HANDLED → 不再走旧路径
+- legacy + DEFER_LEGACY → 继续原 form handler / _select_option
+- legacy + AMBIGUOUS → 零点击，失败（不 fallback）
+- legacy + INVALID → fall through legacy（旧协议可能仍可工作）
 - 歧义（任何 origin）→ 零点击，禁止 fallback
 
 ### 1.4 RadioStrategy.execute(intent, probe, frame_id)
@@ -232,23 +342,40 @@ class VerifyResult:
 - 每个 frame 独立分配 token
 - finally 块逐 frame 清理，不留残留
 
-### 2.3 CDP Click Wrapper（新增 `common.py` 或 `click_utils.py`）
+### 2.3 CDP Click 底层修复（common.py）
 
 ```python
-class ClickResult:
-    success: bool
-    error: str | None      # None on success; "not_interactive" / "no_coordinates" / "cdp_error"
+def click_checked(cdp, selector: str, frame_id: str = "", timeout_ms: int = 3000) -> ClickResult:
+    """Structured CDP click. Checks subprocess returncode, timeout, stderr, and
+    verifies the element still exists after click (not detached by DOM remount).
 
-def safe_click(cdp, selector: str, frame_id: str = "") -> ClickResult:
-    """CDP click that returns structured result instead of silently failing."""
+    Returns ClickResult(success, error, error_type).
+    Does NOT silently swallow click failures.
+    """
     try:
-        cdp.click(selector, frame_id)
-        return ClickResult(success=True, error=None)
+        raw = cdp.click(selector, frame_id, timeout=timeout_ms)
+        # Parse raw CDP response — check for error indicators
+        if isinstance(raw, dict):
+            err = raw.get("error") or raw.get("exception", {}).get("description", "")
+            if err:
+                return ClickResult(success=False, error=err, error_type="cdp_error")
+            return ClickResult(success=True, error=None, error_type=None)
+        if isinstance(raw, str):
+            if "Error" in raw or "Exception" in raw:
+                return ClickResult(success=False, error=raw[:200], error_type="cdp_error")
+            return ClickResult(success=True, error=None, error_type=None)
+        return ClickResult(success=True, error=None, error_type=None)
+    except subprocess.TimeoutExpired:
+        return ClickResult(success=False, error="timeout", error_type="timeout")
     except Exception as e:
-        return ClickResult(success=False, error=str(e)[:200])
+        return ClickResult(success=False, error=str(e)[:200], error_type="exception")
 ```
 
-用于产生可靠的 CLICK_FAILED status。
+**同时立即修复** `json_executor.py` 两处现有假成功（不保留 FIXME）：
+- L512: `"checked" in "not checked"` → 改为精确 `=== true` 比较
+- L542: `"checked" in "not checked"` → 同上
+
+两处都在 `_select_option()` 的 quiz-scoped / control_types 路径。修复方式：将 JS verify 改为返回 JSON `{"checked": true}` 或 `{"checked": false}`，Python 侧 `json.loads()` 后精确比较。
 
 ### 2.4 ProbeSession — frame_id 跟踪
 
@@ -322,63 +449,86 @@ UNSUPPORTED_CONTROL — canonical: 无匹配 Strategy Probe
 
 ### 5.1 新增结构化诊断 `choice_groups`
 
-在 `json_pipeline.py` `_diagnose_page()` 或 `_diagnose_snapshot()` 中新增：
+在 `json_pipeline.py` `_diagnose_snapshot()` 或独立方法中新增：
 
 ```python
 def _diagnose_choice_groups(cdp, frame_id="") -> list[dict]:
-    """Scan page for radio groups, fieldset/legend, radiogroup with accessible names."""
+    """Scan page for radio groups with their accessible labels and options.
+
+    Handles CTM-like DOM where question title is a plain <label> without 'for',
+    inside a .form-section container — NOT a <legend> or label[for].
+    """
     js = """(function(){
       var groups = [];
-      // Native radio groups by name
       var seen = {};
       var radios = document.querySelectorAll('input[type=radio]');
       radios.forEach(function(r){
         if (r.disabled || r.closest('[aria-hidden=true]')) return;
-        var name = r.name || r.id || '';
-        if (!name || seen[name]) return;
-        seen[name] = true;
+        // Group by (form owner, name) — not just name
         var form = r.closest('form');
-        var owner = form ? form.id || '' : '';
-        var fieldset = r.closest('fieldset');
-        var legend = fieldset ? (fieldset.querySelector('legend')||{}).textContent || '' : '';
-        var labels = document.querySelectorAll('label[for="'+r.id+'"]');
-        var labelText = labels.length ? labels[0].textContent.trim() : '';
-        var options = [];
-        var siblings = (form||document).querySelectorAll('input[type=radio][name="'+name+'"]');
-        siblings.forEach(function(s){
-          var optLabel = s.closest('label');
-          var optText = optLabel ? optLabel.textContent.trim() : '';
-          if (!optText && s.id) {
-            var forLabel = document.querySelector('label[for="'+s.id+'"]');
-            optText = forLabel ? forLabel.textContent.trim() : '';
+        var ownerId = form ? (form.id || form.getAttribute('data-form-id') || '') : '';
+        var key = ownerId + '::' + (r.name || '');
+        if (!key || seen[key]) return;
+        seen[key] = true;
+
+        // Find question title: text node / label WITHOUT nested input in the
+        // minimal semantic container (.form-section, fieldset, .question, etc.)
+        var container = r.closest(
+          '[class*=form-section],[class*=question],[class*=field],fieldset,.form-group,.form-row');
+        var heading = '';
+        if (container) {
+          // Walk direct children / labels looking for text that doesn't contain an input
+          var children = container.querySelectorAll('label,span,p,h3,h4,.label,.title,.heading');
+          for (var c=0;c<children.length;c++){
+            var inp = children[c].querySelector('input,select,textarea');
+            if (!inp && children[c].offsetWidth > 0) {
+              heading = children[c].textContent.trim();
+              if (heading.length >= 2) break;
+            }
           }
-          options.push({text: optText, value: s.value, checked: s.checked});
-        });
-        groups.push({
-          label: legend || labelText || '',
-          type: 'native_radio',
-          name: name,
-          owner: owner,
-          options: options
-        });
-      });
-      // ARIA radio groups
-      var ariaGroups = document.querySelectorAll('[role=radiogroup]');
-      ariaGroups.forEach(function(g){
-        if (!g.offsetWidth) return;
-        var label = g.getAttribute('aria-label') || g.getAttribute('aria-labelledby') || '';
-        var ariaRadios = g.querySelectorAll('[role=radio]');
+          // Fallback: legend
+          if (!heading) {
+            var leg = container.querySelector('legend');
+            heading = leg ? leg.textContent.trim() : '';
+          }
+          // Last resort: aria-labelledby
+          if (!heading) {
+            var labelledById = container.getAttribute('aria-labelledby');
+            if (labelledById) {
+              var ref = document.getElementById(labelledById);
+              heading = ref ? ref.textContent.trim() : '';
+            }
+          }
+        }
+
+        // Collect options
         var options = [];
-        ariaRadios.forEach(function(r){
+        var selector = 'input[type=radio][name="'+r.name+'"]';
+        var siblings = (form||document).querySelectorAll(selector);
+        siblings.forEach(function(s){
+          if (s.closest('[aria-hidden=true]')) return;  // exclude hidden wizard steps
+          var optLabel = s.closest('label');
+          var optText = '';
+          if (optLabel) {
+            optText = optLabel.textContent.replace(/\\s+/g,' ').trim();
+          } else if (s.id) {
+            var forLabel = document.querySelector('label[for="'+s.id+'"]');
+            optText = forLabel ? forLabel.textContent.replace(/\\s+/g,' ').trim() : '';
+          }
+          if (!optText && s.value) optText = s.value;
           options.push({
-            text: (r.textContent||'').trim(),
-            value: r.getAttribute('aria-checked')||'',
-            checked: r.getAttribute('aria-checked')==='true'
+            text: optText,
+            value: s.value,
+            checked: s.checked
           });
         });
+
         groups.push({
-          label: label,
-          type: 'aria_radio',
+          label: heading,
+          type: 'native_radio',
+          name: r.name,
+          owner: ownerId,
+          frame_id: '',  // filled by caller if in iframe
           options: options
         });
       });
@@ -386,17 +536,26 @@ def _diagnose_choice_groups(cdp, frame_id="") -> list[dict]:
     })()"""
     raw = cdp.eval(js, frame_id)
     try:
-        return json.loads(raw) if isinstance(raw, str) else raw
+        result = json.loads(raw) if isinstance(raw, str) else raw
+        # Tag frame_id
+        for g in result:
+            g["frame_id"] = frame_id
+        return result
     except:
         return []
 ```
 
-`page_diag` 新增 choice_groups 段：
+**诊断输出格式**（追加到 page_diag 末尾）：
 ```
 选择组:
-[{"label":"Annual Income Range","type":"native_radio","options":[...]},
- {"label":"Do you have existing cover?","type":"native_radio","options":[...]}]
+[{"label":"Annual Income Range","type":"native_radio","name":"healthCover_income",
+  "owner":"","options":[
+    {"text":"$30k-$60k","value":"1","checked":false},
+    {"text":"$60k-$100k","value":"2","checked":false}
+  ]}]
 ```
+
+**CTM-like diagnostic 单测**：使用包含 `.form-section > label`（无 for）+ radio input 的 fixture HTML 验证 heading 提取正确。
 
 ### 5.2 GENERATE_PROMPT 变更
 
@@ -493,6 +652,30 @@ L47: `field.type` 自动补全跳过 `action="select_option"`。
 
 ## 八、验收用例
 
+### 测试环境约束
+
+- DOM 选择测试（U1-U18, U21）需要真实浏览器/CDP；普通 mock 无法执行注入 JS
+- 使用 `tests/fixtures/radio-groups.html` 独立加载每个场景，避免同一 fixture 多 radio 组互相干扰
+- 所有 CDP 测试共享一个浏览器 session，但每个用例执行前 reload 页面 + cleanup markers
+- 固定 JSON 单步测试**不能**用 `JSONExecutor.run()` 的最终布尔值 — 需暴露 `execute_choice_step()` 或读取 `last_outcome`
+
+```python
+# JSONExecutor 新增公开方法
+def execute_choice_step(self, step: dict) -> SelectOutcome:
+    """Execute a single select_option step and return the structured outcome.
+    Does NOT go through the full run() pipeline — callers assert on status/evidence."""
+    ...
+```
+
+### 调试 Flag — 假成功立即修复
+
+两个 `_select_option()` 中的 `"checked" in "not checked"` 假成功**本轮立即修**：
+
+- `json_executor.py` L512: JS verify 改为返回 `{"checked": true/false}`，Python 侧 `json.loads()` 后精确比较 `result["checked"] is True`
+- `json_executor.py` L542: 同上
+
+不保留 FIXME，与 RadioStrategy 同批次提交。
+
 ### 单元测试 (tests/test_choice_explorer.py)
 
 使用 `tests/fixtures/radio-groups.html`：
@@ -519,10 +702,11 @@ L47: `field.type` 自动补全跳过 `action="select_option"`。
 | U18 | iframe 内 radio | SELECTED, frame_id 全链传递 |
 | U19 | canonical select_option + 仅 checkbox | UNSUPPORTED_CONTROL, 零点击, 不回退 |
 | U20 | canonical select_option + 仅 .chip 卡片 | UNSUPPORTED_CONTROL, 零点击, 不回退 |
-| U21 | mixed radio + checkbox 页面 | AMBIGUOUS_CONTROL, 零点击 |
-| U22 | invalid mode | 解析层报错 |
-| U23 | exact 缺 text | 解析层报错 |
-| U24 | random 带了 text | 解析层报错 |
+| U21 | 同一 field scope 内 radio + checkbox 并存 | AMBIGUOUS_CONTROL, 零点击（冲突控件检测限定同一最小语义容器，不扫描页面其他位置的 consent checkbox） |
+| U22 | exact 模式缺 text（`option.mode=exact, 无text字段`） | INVALID_INTENT, 零 DOM 探测 |
+| U23 | random 模式带了 text（`option.mode=random, text="$30k"`） | INVALID_INTENT, 零 DOM 探测 |
+| U24 | 未知 mode（`option.mode="fuzzy"`） | INVALID_INTENT, 零 DOM 探测 |
+| U25 | CTM-like diagnostic: .form-section > label(无for) 标题提取 | choice_groups label = "Annual Income Range"，非空，非选项文字 |
 
 ### 兼容测试 (tests/test_select_option_compat.py)
 
