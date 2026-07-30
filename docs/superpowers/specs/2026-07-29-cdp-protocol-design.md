@@ -451,35 +451,49 @@ class BrowserManager:
 
 ---
 
-## 五、包结构
+## 五、包结构（方案 A：单包，newTaskTest 为工具包）
 
 ```
-lanuage_core/
-├── pyproject.toml
-├── src/lanuage_core/
-│   ├── __init__.py             # exports Protocol + Adapter + run_automation re-export
-│   ├── cdp_protocol.py
-│   ├── subprocess_cdp_client.py
-│   └── legacy_adapter.py
-└── tests/
-
-lanuage/                        # 现有仓库
+/company/newTaskTest/              # 工具包 — CDP 层 + Bit 浏览器
 ├── src/
-│   └── ...
-├── pyproject.toml               # depends: lanuage_core
-└── tests/
+│   ├── cdp_protocol.py            # CDPClient Protocol + CommandResult + RawCommand + 异常
+│   ├── subprocess_cdp_client.py   # SubprocessCDPClient + classifier + decoder
+│   ├── legacy_adapter.py          # LegacyAdapter（本地 Chrome）
+│   ├── bit_cdp_adapter.py         # BitCDPAdapter（Bit 浏览器）
+│   ├── bit_api.py                 # _bit_open, _bit_close, _list_alive_pids ...
+│   ├── browser_manager.py         # BrowserLease + SessionRecord + BrowserManager (Phase 2)
+│   ├── browser.py                 # 已有
+│   ├── config.py                  # 已有
+│   └── logger.py                  # 已有
+├── tests/
+│   ├── test_cdp_protocol.py       # decoder + classifier + argv
+│   ├── test_legacy_adapter.py     # frame_id + _pipeline_form 回归
+│   └── test_bit_adapter.py        # Bit 集成测试
+├── cdp                            # CDP 二进制
+├── bit.sh                         # bit.sh 脚本
+└── config.yaml                    # Bit 配置
 
-company/newTaskTest/
-├── pyproject.toml               # depends: lanuage_core (re-exports run_automation)
+/company/lanuage/                  # 现有仓库 — 表单自动化
 ├── src/
-│   ├── browser_manager.py
-│   ├── bit_api.py               # _bit_open, _bit_close, _list_alive_pids, etc.
-│   ├── bit_cdp_adapter.py
+│   ├── json_pipeline.py           # 注入 CDPClient 实例
+│   ├── json_executor.py           # 注入 CDPClient 实例
+│   ├── locator.py                 # 注入 CDPClient 实例
 │   └── ...
-└── tests/
+├── tests/
+│   └── test_common.py             # 11 个现有测试，保持不变
+└── ...
+
+# lanuage 引用 newTaskTest:
+# import sys; sys.path.insert(0, '/company/newTaskTest')
+# from src.legacy_adapter import LegacyAdapter
+# cdp = LegacyAdapter(ws_url)  # 替代 CDPHelper(ws_url)
 ```
 
-**依赖简化**：`newTaskTest` 只依赖 `lanuage_core`。`lanuage_core/__init__.py` 重导出 `run_automation`（实现仍在 lanuage，由 lanuage_core 通过 deferred import 暴露）。
+**原理**：
+- newTaskTest 提供 `cdp_protocol.py` + 两个 adapter + Bit 生命周期
+- lanuage 通过 `sys.path` 引用，入口文件把 `CDPHelper(ws_url)` 替换为 `LegacyAdapter(ws_url)`
+- 不建新仓库、不加 `pyproject.toml`、不 `pip install`
+- mock 本地测试和 Bit 浏览器测试共享同一套 Protocol，adapter 不同
 
 ---
 
@@ -720,24 +734,23 @@ def test_close_session_zombie_cleanup(mocker):
 
 ## 八、实施顺序
 
-| Phase | 内容 |
-|-------|------|
-| 1 | `cdp_protocol.py` — Protocol + CommandResult + RawCommand + CDPTimeout |
-| 2 | `subprocess_cdp_client.py` — client + classifier (transport-first) + decoder |
-| 3 | 解码器测试 + 分类器测试 + argv 测试 |
-| **── Gate A ──** | |
-| 4 | `pyproject.toml` — lanuage_core 包 |
-| 5 | `CDPHelper._run_command()` 底层 RawCommand |
-| 6 | `LegacyAdapter` |
-| 7 | 迁移 A — frame_id keyword-only (~93 处) |
-| 8 | 迁移 B — click/form → check .ok |
-| 9 | 迁移 C — snapshot/json.loads → Adapter 归一化 |
-| 10 | 迁移 D — click_checked() 删除 |
-| 11 | AST 守卫 — 父节点检查，禁止裸调用 |
-| 12 | 迁移 E — composition roots |
-| **── Gate B ──** | |
-| 13 | `BrowserLease` + `SessionRecord` + `BrowserManager` |
-| 14 | `bit_api.py` — _bit_open/_bit_close/_list_alive_pids 签名与错误契约 |
-| 15 | BrowserManager 测试（ABA / config-conflict / rollback / zombie cleanup） |
-| 16 | `BitCDPAdapter` |
-| 17 | Bit 集成测试（iframe dynamic frame_id + finally release） |
+| Phase | 内容 | 位置 |
+|-------|------|------|
+| 1 | `cdp_protocol.py` — Protocol + CommandResult + RawCommand + CDPTimeout | newTaskTest |
+| 2 | `subprocess_cdp_client.py` — client + classifier + decoder | newTaskTest |
+| 3 | 解码器测试 + 分类器测试 + argv 测试 | newTaskTest |
+| **── Gate A: Protocol + Adapter 可实施 ──** | | |
+| 4 | `CDPHelper._run_command()` 底层 RawCommand | lanuage |
+| 5 | `LegacyAdapter` | newTaskTest |
+| 6 | 迁移 A — frame_id keyword-only (~93 处) | lanuage |
+| 7 | 迁移 B — click/form → check .ok | lanuage |
+| 8 | 迁移 C — snapshot/json.loads → Adapter 归一化 | lanuage |
+| 9 | 迁移 D — click_checked() 删除 | lanuage |
+| 10 | AST 守卫 — 禁止裸 click/form | lanuage |
+| 11 | 迁移 E — composition roots（注入 LegacyAdapter） | lanuage |
+| **── Gate B: lanuage 内部迁移完成 ──** | | |
+| 12 | `BrowserLease` + `SessionRecord` + `BrowserManager` | newTaskTest |
+| 13 | `bit_api.py` — _bit_open/_bit_close/_list_alive_pids | newTaskTest |
+| 14 | BrowserManager 测试 | newTaskTest |
+| 15 | `BitCDPAdapter` | newTaskTest |
+| 16 | Bit 集成测试 | newTaskTest |
