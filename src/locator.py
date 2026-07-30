@@ -132,6 +132,22 @@ class FieldLocator:
             else:
                 self.log.warning(f"[Locator] Discarding invisible: {sel}")
 
+        # Filter out type mismatches (e.g. aria-label matching <select> when field type is "tel")
+        ftype = field.get("type", "").lower()
+        if ftype in ("tel", "email", "text", "password"):
+            filtered = []
+            for c in valid:
+                sel = c.get("selector", "")
+                # Skip <select> matches for input-type fields
+                if ftype != "select" and ("select" in sel.lower() or "Select" in sel):
+                    # Check if selector targets a SELECT tag
+                    if self._is_select(sel, frame_id):
+                        self.log.info(f"[Locator] Skipping select match for type={ftype}: {sel}")
+                        continue
+                filtered.append(c)
+            if filtered:
+                valid = filtered
+
         if not valid:
             raise LocatorError(field, [{'strategy': 'all', 'error': f'No valid candidates from {len(all_candidates)} raw candidates'}])
 
@@ -157,6 +173,23 @@ class FieldLocator:
         # Only apply to type_match candidates — they're indexed in DOM order.
         # Merged-list indexing is unsafe because candidates from different
         # strategies (aria-label, placeholder, etc.) interleave unpredictably.
+        #
+        # Guard: if best-confidence candidate is NOT type_match (e.g. placeholder,
+        # label_for, exact_attrs), use it directly. Position heuristic only makes
+        # sense when all top candidates are type_match with similar confidence.
+        best_by_conf = max(valid, key=lambda c: (c['confidence'], -len(c.get('selector',''))))
+        if not (best_by_conf.get('strategy', '') or '').startswith('type_match'):
+            alts = [LocatorResult(c['selector'], c['strategy'], c['confidence'], frame_id)
+                    for c in valid if c != best_by_conf]
+            result = LocatorResult(best_by_conf['selector'], best_by_conf['strategy'],
+                                   best_by_conf['confidence'], frame_id, alternatives=alts)
+            if alts:
+                self.log.warning(f"[Locator] Multiple candidates for {field}: "
+                               f"picked {best_by_conf['strategy']} (conf={best_by_conf['confidence']}), "
+                               f"{len(alts)} alternatives: {[a.selector for a in alts]}")
+            self._cache[cache_key] = result
+            return result
+
         label = field.get("label", "").lower() or field.get("name", "").lower()
         if label:
             pos_map = {
@@ -226,7 +259,7 @@ class FieldLocator:
             f"headings[r[idx]].setAttribute('data-scope','1');return'found '+(r.length)+' groups';}}"
             f"return'none';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         if "found" in result:
             return '[data-scope="1"]'
         return ""
@@ -278,15 +311,15 @@ class FieldLocator:
                 f"for(var i=0;i<els.length;i++){{if((els[i].tagName!=='INPUT'||els[i].tabIndex!==-1)&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))r.push(i);}}"
                 f"return JSON.stringify(r);}})()"
             )
-            raw = self.cdp.eval(js, frame_id)
+            raw = self.cdp.eval(js, frame_id=frame_id)
             try:
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
                 if isinstance(parsed, str):
                     parsed = json.loads(parsed)
                 indices = parsed
                 if attr == 'id':
-                    # ID should be unique — use bare selector, nth-of-type is meaningless for mixed tags
-                    selector = f'[{attr}*="{esc}" i]'
+                    # Scope to form elements — bare [id*=…] can match wrapper DIVs
+                    selector = f'input[{attr}*="{esc}" i],select[{attr}*="{esc}" i],textarea[{attr}*="{esc}" i]'
                     results.append({'selector': selector, 'strategy': attr, 'confidence': 0.85})
                 else:
                     for idx in indices:
@@ -309,7 +342,7 @@ class FieldLocator:
             f"if(inp&&inp.id&&(inp.offsetWidth>0||inp.type==='checkbox'||inp.type==='radio'||inp.placeholder||inp.name))r.push(inp.id);}}}}"
             f"return JSON.stringify(r);}})()"
         )
-        raw = self.cdp.eval(js, frame_id)
+        raw = self.cdp.eval(js, frame_id=frame_id)
         try:
             parsed = json.loads(raw) if isinstance(raw, str) else raw
             if isinstance(parsed, str):
@@ -344,7 +377,7 @@ class FieldLocator:
             f"for(var i=0;i<els.length;i++){{if((els[i].tagName!=='INPUT'||els[i].tabIndex!==-1)&&(els[i].offsetWidth>0||els[i].placeholder||els[i].name))c++;}}"
             f"return c;}})()"
         )
-        raw = self.cdp.eval(js, frame_id)
+        raw = self.cdp.eval(js, frame_id=frame_id)
         try: count = int(raw) if isinstance(raw, (int, float)) else int(raw.strip().strip('"'))
         except: count = 0
 
@@ -356,7 +389,7 @@ class FieldLocator:
                 f"for(var i=0;i<els.length;i++){{if(els[i].offsetWidth>0||els[i].placeholder||els[i].name||els[i].id)c++;}}"
                 f"return c;}})()"
             )
-            raw2 = self.cdp.eval(js2, frame_id)
+            raw2 = self.cdp.eval(js2, frame_id=frame_id)
             try: count = int(raw2) if isinstance(raw2, (int, float)) else int(raw2.strip().strip('"'))
             except: count = 0
             if count == 0:
@@ -376,7 +409,7 @@ class FieldLocator:
             f"els[i].setAttribute('data-{marker}',String(n));n++;}}}}"
             f"return n;}})()"
         )
-        raw = self.cdp.eval(js_mark, frame_id)
+        raw = self.cdp.eval(js_mark, frame_id=frame_id)
         try: actual_count = int(raw) if isinstance(raw, (int, float)) else int(raw.strip().strip('"'))
         except: actual_count = count
 
@@ -392,29 +425,48 @@ class FieldLocator:
                     f"var prev=e.previousElementSibling;if(prev&&prev.textContent.toLowerCase().indexOf('{esc}')!==-1)return'1';"
                     f"return'0';}})()"
                 )
-                prox_raw = self.cdp.eval(js_prox, frame_id)
+                prox_raw = self.cdp.eval(js_prox, frame_id=frame_id)
                 if '1' in prox_raw:
                     conf = 0.85
             results.append({'selector': idx_sel, 'strategy': 'type_match', 'confidence': conf})
         return results
 
     def _candidates_placeholder(self, field, frame_id, container) -> List[dict]:
-        """Find all inputs matching placeholder text."""
+        """Find all inputs matching placeholder text.
+        Tries field['placeholder'] first (exact value from page), then label as fallback."""
+        # Best: match by the actual placeholder value (e.g. "John Doe", "(555)123-4567")
+        ph_val = field.get("placeholder", "")
+        search_texts = []
+        if ph_val:
+            search_texts.append((ph_val, 0.9, 'placeholder'))
+        # Fallback: match by label (e.g. "Full Name", "Email")
         label = field.get("label", "")
-        if not label: return []
-        esc = label.replace("'", "\\'")
-        js = (
-            f"(function(){{var r=[];var ins=document.querySelectorAll('input[placeholder]');"
-            f"for(var i=0;i<ins.length;i++){{"
-            f"if(ins[i].placeholder.toLowerCase().indexOf('{esc.lower()}')!==-1&&(ins[i].offsetWidth>0||ins[i].placeholder||ins[i].name))"
-            f"r.push(i);}}return JSON.stringify(r);}})()"
-        )
-        raw = self.cdp.eval(js, frame_id)
-        try:
-            indices = json.loads(raw) if isinstance(raw, str) else raw
-            return [{'selector': f'input[placeholder*="{esc}" i]', 'strategy': 'placeholder',
-                     'confidence': 0.85} for _ in indices]
-        except: return []
+        if label:
+            search_texts.append((label, 0.85, 'placeholder'))
+        if not search_texts:
+            return []
+
+        results = []
+        seen = set()
+        for search, conf, strategy in search_texts:
+            esc = search.replace("'", "\\'")
+            js = (
+                f"(function(){{var r=[];var ins=document.querySelectorAll('input[placeholder]');"
+                f"for(var i=0;i<ins.length;i++){{"
+                f"if(ins[i].placeholder.toLowerCase().indexOf('{esc.lower()}')!==-1&&(ins[i].offsetWidth>0||ins[i].placeholder||ins[i].name))"
+                f"r.push(i);}}return JSON.stringify(r);}})()"
+            )
+            raw = self.cdp.eval(js, frame_id=frame_id)
+            try:
+                indices = json.loads(raw) if isinstance(raw, str) else raw
+                for idx in indices:
+                    if idx not in seen:
+                        seen.add(idx)
+                        results.append({'selector': f'input[placeholder*="{esc}" i]',
+                                        'strategy': strategy, 'confidence': conf})
+            except:
+                pass
+        return results
 
     def _candidates_adjacent_text(self, field, frame_id, container) -> List[dict]:
         """Find inputs/selects near matching text (parent, sibling, heading).
@@ -466,7 +518,7 @@ class FieldLocator:
             f"}}}}"
             f"}}return JSON.stringify(results);}})()"
         )
-        raw = self.cdp.eval(js, frame_id)
+        raw = self.cdp.eval(js, frame_id=frame_id)
         try:
             results = json.loads(raw) if isinstance(raw, str) else raw
             conf_map = {'s': 0.7, 'h': 0.65, 'a': 0.55, 'p': 0.5}
@@ -477,6 +529,10 @@ class FieldLocator:
 
     def _candidates_custom_select(self, field, frame_id, container) -> List[dict]:
         """Find custom select triggers (Ant Design, React Select) by label→form-item→trigger."""
+        # Only relevant for select-like fields; skip text/email/tel/checkbox etc.
+        ftype = (field.get("type") or "").lower()
+        if ftype in ("text", "email", "tel", "password", "number", "checkbox", "radio", "range", "date"):
+            return []
         label = field.get("label", "")
         if not label: return []
         esc = label.replace("'", "\\'")
@@ -493,11 +549,11 @@ class FieldLocator:
             f"if(t&&t.offsetWidth>0){{trigger=t;}}}}"
             f"if(!trigger){{var area=labels[i].closest('[class*=form-item],fieldset');"
             f"if(area)trigger=area.querySelector('[role=combobox],.ant-select-selector,[class*=select__control]');}}"
-            f"if(trigger&&trigger.offsetWidth>0){{trigger.setAttribute('data-custom-trigger','1');return'trigger';}}"
+            f"if(trigger&&trigger.offsetWidth>0){{var old=document.querySelectorAll('[data-custom-trigger]');for(var k=0;k<old.length;k++)old[k].removeAttribute('data-custom-trigger');trigger.setAttribute('data-custom-trigger','1');return'trigger';}}"
             f"}}}}"
             f"return'none';}})()"
         )
-        raw = self.cdp.eval(js, frame_id)
+        raw = self.cdp.eval(js, frame_id=frame_id)
         if "trigger" in str(raw):
             return [{'selector': '[data-custom-trigger="1"]', 'strategy': 'custom_select', 'confidence': 0.9}]
         return []
@@ -563,7 +619,7 @@ class FieldLocator:
             f"r.push({{n:e.name||'',id:e.id||'',aria:e.getAttribute('aria-label')||''}});}}"
             f"return JSON.stringify(r);}})()"
         )
-        raw = self.cdp.eval(js, frame_id)
+        raw = self.cdp.eval(js, frame_id=frame_id)
         try:
             parsed = json.loads(raw) if isinstance(raw, str) else raw
             candidates = parsed
@@ -588,7 +644,7 @@ class FieldLocator:
             f"if(inp&&inp.offsetWidth>0){{inp.setAttribute('data-l4f','1');return'found';}}}}"
             f"return'none';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         if "found" in result:
             # Cleanup
             self.cdp.eval(
@@ -636,7 +692,7 @@ class FieldLocator:
             f"if(ins[i].offsetWidth>0){{ins[i].setAttribute('data-ph','1');return'found';}}}}"
             f"return'none';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         if "found" in result:
             self.cdp.eval(
                 "(function(){var e=document.querySelector('[data-ph]');"
@@ -667,7 +723,7 @@ class FieldLocator:
             f"}}"
             f"return'none';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         if "found" in result:
             self.cdp.eval(
                 "(function(){var e=document.querySelector('[data-adj]');"
@@ -724,6 +780,17 @@ class FieldLocator:
             self.log.warning(f"[Locator] AI fallback failed: {e}")
         return None
 
+    def _is_select(self, selector: str, frame_id: str) -> bool:
+        """Quick check: does the selector resolve to a <select> element?"""
+        esc = selector.replace("'", "\\'")
+        try:
+            raw = self.cdp.eval(
+                f"(function(){{var e=document.querySelector('{esc}');"
+                f"return e?e.tagName:'';}})()", frame_id)
+            return "SELECT" in str(raw).upper()
+        except Exception:
+            return False
+
     def _visible(self, selector: str, frame_id: str) -> bool:
         """Check if element exists and is visible. Accepts hidden form controls
         (custom widgets, MUI native inputs) that have semantic attributes."""
@@ -740,7 +807,10 @@ class FieldLocator:
             # Has a visible label pointing to it
             f"var labels=document.querySelectorAll('label[for]');"
             f"for(var i=0;i<labels.length;i++){{if(labels[i].htmlFor===e.id&&labels[i].offsetWidth>0)return'yes';}}"
+            # Inside a visible wrapping label (no 'for' attribute)
+            f"var ancestor=e.closest('label');"
+            f"if(ancestor&&ancestor.offsetWidth>0)return'yes';"
             f"return'no';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         return "yes" in result

@@ -4,6 +4,7 @@ from pathlib import Path
 from flask import Flask, render_template_string, request, jsonify
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.insert(0, '/company/newTaskTest')
 
 app = Flask(__name__)
 
@@ -78,11 +79,11 @@ def api_run():
 
     ws_url = os.environ.get('WS_URL', 'ws://127.0.0.1:9222/devtools/browser/acfeb9df-2d32-4b81-83d3-dd3ba14d3aa6')
     try:
-        from common import CDPHelper
+        from src.legacy_adapter import LegacyAdapter
         from json_pipeline import JSONPipeline
         from openai import OpenAI
 
-        cdp = CDPHelper(ws_url)
+        cdp = LegacyAdapter(ws_url)
         llm = OpenAI(
             api_key=os.environ.get('OPENAI_API_KEY', ''),
             base_url=os.environ.get('OPENAI_BASE_URL', 'https://api.deepseek.com')

@@ -268,10 +268,10 @@ class JSONExecutor:
                         f"{{bs[i].setAttribute('data-auto-advance','1');return'found';}}}}"
                         f"return'none';}})()"
                     )
-                    r = self.cdp.eval(js_mark, self._frame_id)
+                    r = self.cdp.eval(js_mark, frame_id=self._frame_id)
                     if "found" in r:
                         try:
-                            self.cdp.click('[data-auto-advance=\"1\"]', self._frame_id)
+                            self.cdp.click('[data-auto-advance=\"1\"]', frame_id=self._frame_id)
                         except Exception:
                             pass
                         self.cdp.eval(
@@ -365,7 +365,7 @@ class JSONExecutor:
             f"return'yes';}}"
             f"return'no';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         return "yes" in result
 
     def _resolve_frame(self, frame_spec: dict) -> str:
@@ -429,7 +429,7 @@ class JSONExecutor:
                     js = (f"(function(){{var bs=document.querySelectorAll('button');"
                           f"for(var i=0;i<bs.length;i++){{if(bs[i].textContent.trim()==='{btn}'&&bs[i].offsetWidth>0)"
                           f"{{bs[i].click();return'clicked';}}}}return'none';}})()")
-                    r = self.cdp.eval(js, self._frame_id)
+                    r = self.cdp.eval(js, frame_id=self._frame_id)
                     if "clicked" in r:
                         self.log.info(f"[JSON] quiz_loop form: clicked {btn}")
                         time.sleep(random.uniform(3, 6))
@@ -467,7 +467,7 @@ class JSONExecutor:
             if "clicked" in result:
                 # CDP-click the marked element
                 try:
-                    self.cdp.click('[data-qz="1"]', self._frame_id)
+                    self.cdp.click('[data-qz="1"]', frame_id=self._frame_id)
                 except Exception:
                     pass
                 # Clean up marker
@@ -485,7 +485,7 @@ class JSONExecutor:
                         f"{{bs[i].click();return'clicked {btn_text}';}}}}"
                         f"return'none';}})()"
                     )
-                    r = self.cdp.eval(js_find, self._frame_id)
+                    r = self.cdp.eval(js_find, frame_id=self._frame_id)
                     if "clicked" in r:
                         self.log.info(f"[JSON] quiz_loop: {r.strip()}")
                         time.sleep(random.uniform(2, 4))
@@ -505,7 +505,7 @@ class JSONExecutor:
                         r = self.cdp.eval(f"(function(){{{js}}})()", fid)
                         self.log.info(f"[JSON] quiz_loop iframe({furl[:40]}): {r.strip()}")
                         if "clicked" in r:
-                            try: self.cdp.click('[data-qz="1"]', fid)
+                            try: self.cdp.click('[data-qz="1"]', frame_id=fid)
                             except: pass
                             self.cdp.eval("(function(){var e=document.querySelector('[data-qz]');if(e)e.removeAttribute('data-qz');})()", fid)
                             time.sleep(random.uniform(1, 2))
@@ -518,7 +518,7 @@ class JSONExecutor:
                                     f"{{bs[i].click();return'clicked {btn_text}';}}}}"
                                     f"return'none';}})()"
                                 )
-                                rr = self.cdp.eval(js_find, fid)
+                                rr = self.cdp.eval(js_find, frame_id=fid)
                                 if "clicked" in rr:
                                     self.log.info(f"[JSON] quiz_loop iframe: {rr.strip()}")
                                     time.sleep(random.uniform(2, 4))
@@ -540,7 +540,7 @@ class JSONExecutor:
                             f"{{bs[i].click();return'clicked {btn_text}';}}}}"
                             f"return'none';}})()"
                         )
-                        r = self.cdp.eval(js_find, self._frame_id)
+                        r = self.cdp.eval(js_find, frame_id=self._frame_id)
                         if "clicked" in r:
                             self.log.info(f"[JSON] quiz_loop: {r.strip()}")
                             time.sleep(random.uniform(2, 4))
@@ -579,7 +579,7 @@ class JSONExecutor:
                     "if(/agree|terms|privacy|consent|subscribe|marketing|policy/.test(t))return'consent';"
                     "q.setAttribute('data-quiz-scope','1');return'scope';})()"
                 )
-                r = self.cdp.eval(detect_js, self._frame_id)
+                r = self.cdp.eval(detect_js, frame_id=self._frame_id)
                 if "scope" in str(r):
                     container = '[data-quiz-scope="1"]'
 
@@ -600,14 +600,14 @@ class JSONExecutor:
                     f"label.setAttribute('data-sel','{token}');"
                     f"return JSON.stringify({{picked:true,token:'{token}',label:label.textContent.trim().substring(0,30)}});}})()"
                 )
-                result = self.cdp.eval(js, self._frame_id)
+                result = self.cdp.eval(js, frame_id=self._frame_id)
                 result_str = str(result)
                 if "picked" in result_str:
                     sel = f'[data-sel=\"{token}\"]'
                     # Use CDP click limited to the quiz scope
                     scope_css = container
                     scoped_sel = f'{scope_css} {sel}'
-                    self.cdp.click(scoped_sel, self._frame_id)
+                    self.cdp.click(scoped_sel, frame_id=self._frame_id)
                     time.sleep(0.3)
                     # Verify checkbox/radio is now checked
                     verify_raw = self.cdp.eval(
@@ -642,10 +642,10 @@ class JSONExecutor:
                     f"label.setAttribute('data-sel','{token}');"
                     f"return JSON.stringify({{picked:true,token:'{token}',label:label.textContent.trim().substring(0,30)}});}})()"
                 )
-                result = self.cdp.eval(js, self._frame_id)
+                result = self.cdp.eval(js, frame_id=self._frame_id)
                 result_str = str(result)
                 if "picked" in result_str:
-                    self.cdp.click(f'[data-sel=\"{token}\"]', self._frame_id)
+                    self.cdp.click(f'[data-sel=\"{token}\"]', frame_id=self._frame_id)
                     time.sleep(0.2)
                     # Verify checked
                     verify_raw = self.cdp.eval(
@@ -707,7 +707,7 @@ class JSONExecutor:
                     sel = f'[data-sel=\"{token}\"]'
                 else:
                     sel = '[data-sel]'
-                self.cdp.click(sel, self._frame_id)
+                self.cdp.click(sel, frame_id=self._frame_id)
                 time.sleep(0.2)
                 self.cdp.eval("(function(){document.querySelectorAll('[data-sel]').forEach(function(e){e.removeAttribute('data-sel');});})()", self._frame_id)
                 return True
@@ -805,8 +805,10 @@ class JSONExecutor:
                             if intent.mode == "random":
                                 ok = self._select_option({"selection_strategy": {"type": "random"}})
                                 return ok
-                            else:
-                                return False  # exact mode with no radio match → fail
+                            # exact mode: rewrite as form+select so SelectExplorer (line 977) handles custom selects
+                            step["action"] = "form"
+                            step["select"] = intent.option
+                            action = "form"
                         elif result == ChoiceResult.INVALID:
                             self.log.warning(f"[JSON] select_option invalid intent")
                             if optional:
@@ -918,7 +920,16 @@ class JSONExecutor:
                             time.sleep(random.uniform(2, 4))
                             continue
                         return False
-                    self.cdp.click(selector, self._frame_id)
+                    # Auto-detect: if click target is a wrapper containing a closed
+                    # dropdown (custom select), use cdp.form --select to handle it
+                    # (open → select → close, avoids overlap issues).
+                    if find and find.get("text"):
+                        sel2 = self._open_dropdown_for_click(selector, find["text"])
+                        if sel2 == '__handled__':
+                            return True  # cdp.form handled the selection
+                        elif sel2:
+                            selector = sel2
+                    self.cdp.click(selector, frame_id=self._frame_id)
                     # For <a> links: CDP click navigates href=# instead of onclick, JS .click() fixes it
                     esc = selector.replace("'", "\\'")
                     self.cdp.eval(
@@ -1055,6 +1066,68 @@ class JSONExecutor:
 
         return False
 
+    def _open_dropdown_for_click(self, wrapper_selector: str, target_text: str) -> str | None:
+        """If wrapper_selector points to a container with a closed dropdown menu,
+        open it, click the matching option, then close the dropdown to prevent
+        overlap with other elements (e.g. Submit button under the menu).
+        Returns '__handled__' if the selection was done, None if no dropdown detected."""
+        try:
+            esc = wrapper_selector.replace("'", "\\'")
+            target_esc = target_text.replace("'", "\\'")
+            probe = self.cdp.eval(
+                f"(function(){{"
+                f"var wrapper=document.querySelector('{esc}');"
+                f"if(!wrapper)return'no-wrapper';"
+                f"var menus=wrapper.querySelectorAll('[class*=menu],[class*=dropdown],[role=listbox]');"
+                f"var closedMenu=null;"
+                f"for(var i=0;i<menus.length;i++){{"
+                f"if(menus[i].offsetWidth===0&&menus[i].offsetHeight===0){{closedMenu=menus[i];break;}}"
+                f"}}"
+                f"if(!closedMenu)return'no-closed-menu';"
+                f"var triggers=wrapper.querySelectorAll('[class*=control],[role=combobox],[onclick]');"
+                f"for(var j=0;j<triggers.length;j++){{"
+                f"if(triggers[j].offsetWidth>0){{triggers[j].setAttribute('data-auto-open','1');return'triggered';}}"
+                f"}}"
+                f"return'no-visible-trigger';"
+                f"}})()",
+                self._frame_id,
+            )
+            if "triggered" not in str(probe):
+                return None
+            self.log.info(f"[JSON] click: auto-opening dropdown for '{target_text}'")
+            self.cdp.click('[data-auto-open="1"]', frame_id=self._frame_id)
+            time.sleep(0.6)
+            # Find the visible option and click it
+            found = self.cdp.eval(
+                f"(function(){{"
+                f"var prev=document.querySelector('[data-target]');if(prev)prev.removeAttribute('data-target');"
+                f"var els=document.querySelectorAll('div,span,li,button,[role=option],option');"
+                f"for(var i=0;i<els.length;i++){{"
+                f"if(els[i].textContent.trim()==='{target_esc}'&&els[i].offsetWidth>0){{"
+                f"els[i].setAttribute('data-target','x');return'found';}}"
+                f"}}"
+                f"return'not found';}})()",
+                self._frame_id,
+            )
+            if "found" not in str(found):
+                self.log.warning(f"[JSON] click: option '{target_text}' not visible after opening dropdown")
+                return None
+            # Click the option
+            self.cdp.click('[data-target="x"]', frame_id=self._frame_id)
+            time.sleep(0.3)
+            # Close the dropdown so it doesn't overlap other elements (e.g. Submit button)
+            self.cdp.eval(
+                "(function(){"
+                "document.querySelectorAll('[class*=menu--open]').forEach(function(m){m.classList.remove(m.className.match(/\\S*menu--open\\S*/)[0]);});"
+                "document.querySelectorAll('[class*=control--menu-is-open]').forEach(function(c){c.classList.remove('css-select__control--menu-is-open');});"
+                "})()",
+                self._frame_id,
+            )
+            return '__handled__'
+        except Exception as _e:
+            self.log.warning(f"[JSON] click: _open_dropdown_for_click error: {_e}")
+        return None
+
     def _classify_select_intent(self, step: dict, selector: str) -> str:
         """Classify form+select intent: DROPDOWN | CHOICE_GROUP | UNKNOWN."""
         if step.get("action") != "form" or "select" not in step:
@@ -1126,7 +1199,7 @@ class JSONExecutor:
             f"box.setAttribute('data-quiz-scope','1');"
             f"return'scope';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         result = str(result).strip().strip('"')
         if result == 'scope':
             return '[data-quiz-scope="1"]'
@@ -1153,7 +1226,7 @@ class JSONExecutor:
             "q.setAttribute('data-quiz-scope','1');"
             "return JSON.stringify({matched:true,count:ctls.length,type:ctls[0].type||ctls[0].getAttribute('role')||''});})()"
         )
-        raw = self.cdp.eval(js, frame_id)
+        raw = self.cdp.eval(js, frame_id=frame_id)
         try:
             if isinstance(raw, dict):
                 result = raw
@@ -1187,7 +1260,7 @@ class JSONExecutor:
             f"role:e.getAttribute('role')||'',aria:e.getAttribute('aria-expanded')||'',"
             f"isContentEditable:e.isContentEditable||e.contentEditable==='true'}});}})()"
         )
-        raw = self.cdp.eval(js_info, frame_id)
+        raw = self.cdp.eval(js_info, frame_id=frame_id)
         try:
             if isinstance(raw, dict):
                 info = raw
@@ -1214,7 +1287,7 @@ class JSONExecutor:
                 f"e.dispatchEvent(new Event('change',{{bubbles:true}}));"
                 f"return JSON.stringify({{value:v}});}})()"
             )
-            raw = self.cdp.eval(random_js, frame_id)
+            raw = self.cdp.eval(random_js, frame_id=frame_id)
             raw_str = str(raw) if not isinstance(raw, str) else raw
             self.log.info(f"[JSON] smart_form: random range → {raw_str[:120]}")
             return 'fail' not in raw_str
@@ -1235,12 +1308,12 @@ class JSONExecutor:
                     f"if(!vis.length)return'fail';var pick=vis[Math.floor(Math.random()*vis.length)];"
                     f"pick.setAttribute('data-rnd-pick','1');return JSON.stringify({{text:pick.textContent.trim().substring(0,30)}});}})()"
                 )
-                raw = self.cdp.eval(mark_js, frame_id)
+                raw = self.cdp.eval(mark_js, frame_id=frame_id)
                 raw_str = str(raw) if not isinstance(raw, str) else raw
                 if 'fail' in raw_str:
                     self.log.info(f"[JSON] smart_form: random radio/chip → no candidates")
                     return False
-                self.cdp.click('[data-rnd-pick=\"1\"]', frame_id)
+                self.cdp.click('[data-rnd-pick=\"1\"]', frame_id=frame_id)
                 time.sleep(0.3)
                 self.log.info(f"[JSON] smart_form: random radio/chip → {raw_str[:120]}")
                 return True
@@ -1267,10 +1340,10 @@ class JSONExecutor:
                 f"chips[i].setAttribute('data-rnd-pick','1');return'clicked';}}}}"
                 f"return'not found';}})()"
             )
-            result = self.cdp.eval(mark_js, frame_id)
+            result = self.cdp.eval(mark_js, frame_id=frame_id)
             result = str(result) if not isinstance(result, str) else result
             if 'clicked' in result:
-                self.cdp.click('[data-rnd-pick=\"1\"]', frame_id)
+                self.cdp.click('[data-rnd-pick=\"1\"]', frame_id=frame_id)
                 time.sleep(0.2)
                 self.log.info(f"[JSON] smart_form: radio/chip select '{select}' → CDP-clicked")
                 return True
@@ -1289,12 +1362,12 @@ class JSONExecutor:
                         f"e.value=pick.value;e.dispatchEvent(new Event('change',{{bubbles:true}}));"
                         f"return JSON.stringify({{value:pick.value,text:pick.textContent.trim()}});}})()"
                     )
-                    raw = self.cdp.eval(random_js, frame_id)
+                    raw = self.cdp.eval(random_js, frame_id=frame_id)
                     self.log.info(f"[JSON] smart_form: random select → {str(raw)[:120]}")
                     return 'fail' not in str(raw)
                 else:
                     # Custom select: click to open, randomly pick visible option
-                    self.cdp.click(selector, frame_id)
+                    self.cdp.click(selector, frame_id=frame_id)
                     time.sleep(0.5)
                     random_js = (
                         f"(function(){{var opts=document.querySelectorAll("
@@ -1303,7 +1376,7 @@ class JSONExecutor:
                         f"if(!vis.length)return'fail';var pick=vis[Math.floor(Math.random()*vis.length)];"
                         f"pick.click();return JSON.stringify({{text:pick.textContent.trim()}});}})()"
                     )
-                    raw = self.cdp.eval(random_js, frame_id)
+                    raw = self.cdp.eval(random_js, frame_id=frame_id)
                     self.log.info(f"[JSON] smart_form: random custom select → {str(raw)[:120]}")
                     time.sleep(0.3)
                     return 'fail' not in str(raw)
@@ -1327,7 +1400,7 @@ class JSONExecutor:
                     f"var iv=setInterval(function(){{if(scan()||Date.now()-t0>2000){{clearInterval(iv);if(found){{found.click();setTimeout(function(){{return'clicked';}},100);}}}}}},100);"
                     f"setTimeout(function(){{clearInterval(iv);if(found)found&&found.click();return found?'clicked':'not found';}},1500);}})()"
                 )
-                result = self.cdp.eval(ant_js, frame_id)
+                result = self.cdp.eval(ant_js, frame_id=frame_id)
                 if "clicked" in str(result):
                     time.sleep(0.3)
                     # Verify selection: check if display text or hidden input matches
@@ -1339,7 +1412,7 @@ class JSONExecutor:
                         f"var sel=formItem?formItem.querySelector('input[type=hidden]'):null;"
                         f"return sel?sel.value:'no display';}})()"
                     )
-                    verify = self.cdp.eval(verify_js, frame_id)
+                    verify = self.cdp.eval(verify_js, frame_id=frame_id)
                     self.log.info(f"[JSON] smart_form: ant select '{select}' → verify: {str(verify).strip()}")
                     if str(verify).strip() == select:
                         return True
@@ -1360,7 +1433,7 @@ class JSONExecutor:
                     f"p=p.parentElement;}}"
                     f"return best;}})()"
                 )
-                parent_sel = self.cdp.eval(parent_js, frame_id)
+                parent_sel = self.cdp.eval(parent_js, frame_id=frame_id)
                 parent_sel = (parent_sel or '').strip().strip('"')
                 if parent_sel and not parent_sel.startswith('Error'):
                     self.log.info(f"[JSON] smart_form: retrying with wrapper {parent_sel}")
@@ -1385,7 +1458,7 @@ class JSONExecutor:
                     # Fallback: any combobox on the page near the label text
                     f"return'none';}})()"
                 )
-                result = self.cdp.eval(find_js, frame_id)
+                result = self.cdp.eval(find_js, frame_id=frame_id)
                 result = (result or '').strip().strip('"')
                 if result == 'ref':
                     trigger = '[data-cb-trigger="1"]'
@@ -1394,7 +1467,7 @@ class JSONExecutor:
                     # Last resort: click the element itself
                     trigger = selector
                     self.log.info(f"[JSON] smart_form: no combobox found, clicking selector directly")
-                self.cdp.click(trigger, frame_id)
+                self.cdp.click(trigger, frame_id=frame_id)
                 time.sleep(0.6)
                 esc_val = select.replace("'", "\\'")
                 # Search for dropdown options (many different implementations)
@@ -1410,7 +1483,7 @@ class JSONExecutor:
                     f"opts[i].click();return'clicked';}}}}"
                     f"return'not found';}})()"
                 )
-                result = self.cdp.eval(opt_js, frame_id)
+                result = self.cdp.eval(opt_js, frame_id=frame_id)
                 self.log.info(f"[JSON] smart_form: custom select option click → {result.strip()}")
                 # Close any open dropdown menus (multi-select doesn't auto-close)
                 close_js = (
@@ -1419,7 +1492,7 @@ class JSONExecutor:
                     f"function(m){{m.classList.remove('css-select__menu--open');}});"
                     f"}})()"
                 )
-                self.cdp.eval(close_js, frame_id)
+                self.cdp.eval(close_js, frame_id=frame_id)
                 time.sleep(0.3)
                 return True
 
@@ -1441,7 +1514,7 @@ class JSONExecutor:
                 self.cdp.form(selector, check="true" if check != "false" else "false",
                              frame_id=frame_id)
             else:
-                self.cdp.click(selector, frame_id)
+                self.cdp.click(selector, frame_id=frame_id)
             return True
 
         # --- CONTENTEDITABLE ---

@@ -463,11 +463,11 @@ when规则:
                     f"{{a.setAttribute('data-csw','1');return'ref';}}"
                     f"}}return'none';}})()"
                 )
-                r = self.cdp.eval(find_wrapper, frame_id)
+                r = self.cdp.eval(find_wrapper, frame_id=frame_id)
                 if (r or '').strip().strip('"') == 'ref':
                     selector = '[data-csw="1"]'
                     self.log.info(f"[pipeline] Using wrapper for custom select")
-        self.cdp.form(selector, value=value, select=select)
+        self.cdp.form(selector, value=value, check=check, select=select, frame_id=frame_id)
         return True
 
     def _post_fix(self, config: dict, result=None) -> dict:

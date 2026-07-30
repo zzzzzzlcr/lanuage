@@ -182,7 +182,7 @@ def snapshot_visible_text_nodes(cdp, frame_id: str = "") -> set:
         "if(t.length>=2&&t.length<=80)nodes.add(t);}}"
         "return JSON.stringify(Array.from(nodes));})()"
     )
-    raw = cdp.eval(js, frame_id)
+    raw = cdp.eval(js, frame_id=frame_id)
     try:
         arr = json.loads(raw) if isinstance(raw, str) else raw
         return set(arr)
@@ -213,10 +213,10 @@ def find_single_safe_trigger(marker_sel: str, cdp, frame_id: str = "") -> str | 
         f"var txt=t.textContent.trim().toLowerCase();"
         f"if(/submit|next|continue|search|go|sign/.test(txt))score-=5;"
         f"if(score>bestScore&&score>0){{best=t;bestScore=score;}}}}"
-        f"if(best){{best.setAttribute('data-probe','trigger');return'trigger';}}"
+        f"if(best){{var old2=document.querySelectorAll('[data-probe]');for(var k=0;k<old2.length;k++)old2[k].removeAttribute('data-probe');best.setAttribute('data-probe','trigger');return'trigger';}}"
         f"return'none';}})()"
     )
-    raw = cdp.eval(js, frame_id)
+    raw = cdp.eval(js, frame_id=frame_id)
     if "trigger" in str(raw):
         return "[data-probe=\"trigger\"]"
     return None
@@ -252,16 +252,35 @@ class SelectExplorer:
             if not trigger_marker:
                 return SelectOutcome("NO_SAFE_TRIGGER", attempts=attempts)
 
-            # 4. Snapshot BEFORE
-            before = snapshot_visible_text_nodes(self.cdp)
+            # 3b. Check if dropdown is already open (e.g. multi-select left open)
+            trigger_esc2 = trigger_marker.replace("'", "\\'")
+            already_open = str(self.cdp.eval(
+                f"(function(){{var t=document.querySelector('{trigger_esc2}');"
+                f"if(!t)return'no';"
+                f"var p=t.parentElement;"
+                f"for(var lv=0;lv<4;lv++){{if(!p)break;"
+                f"var menu=p.querySelector('[class*=menu--open],[class*=dropdown--open],[aria-expanded=true]');"
+                f"if(menu)return'yes';"
+                f"p=p.parentElement;}}"
+                f"return'no';}})()"
+            ))
 
-            # 5. Click trigger
-            self.cdp.click(trigger_marker)
-            time.sleep(0.6)
+            if "yes" in already_open:
+                # Dropdown already open — just pick from currently visible options
+                before = set()
+                after = snapshot_visible_text_nodes(self.cdp)
+                became_visible = after
+            else:
+                # 4. Snapshot BEFORE
+                before = snapshot_visible_text_nodes(self.cdp)
 
-            # 6. Snapshot AFTER
-            after = snapshot_visible_text_nodes(self.cdp)
-            became_visible = after - before
+                # 5. Click trigger
+                self.cdp.click(trigger_marker)
+                time.sleep(0.6)
+
+                # 6. Snapshot AFTER
+                after = snapshot_visible_text_nodes(self.cdp)
+                became_visible = after - before
 
             if not became_visible:
                 attempts.append({"trigger": trigger_marker, "delta": "empty"})
@@ -306,6 +325,14 @@ class SelectExplorer:
                                      evidence={"click_result": str(opt_result)})
             self.cdp.click('[data-probe=\"selected\"]')
             time.sleep(0.3)
+            # Close dropdown after selection (prevents overlap with other elements)
+            self.cdp.eval(
+                "(function(){"
+                "document.querySelectorAll('[class*=menu--open]').forEach(function(m){var c=m.className.match(/\\S*menu--open\\S*/);if(c)m.classList.remove(c[0]);});"
+                "document.querySelectorAll('[class*=control--menu-is-open]').forEach(function(c){c.classList.remove('css-select__control--menu-is-open');});"
+                "})()"
+            )
+            time.sleep(0.15)
 
             # 9. Verify
             trigger_esc = trigger_marker.replace("'", "\\'")
@@ -313,12 +340,21 @@ class SelectExplorer:
             verify_js = (
                 f"(function(){{var t=document.querySelector('{trigger_esc}');"
                 f"if(!t)return'not verified';"
-                f"var txt=t.textContent.trim().toLowerCase();"
+                # textContent works for most cases, but hidden placeholders can
+                # pollute it (e.g. react-select hides placeholder but keeps it
+                # in DOM). innerText respects CSS visibility, so try it too.
+                f"var txt=(t.innerText||t.textContent||'').trim().toLowerCase();"
                 f"if(txt.indexOf('{target_lower}')!==-1)return'verified';"
+                # Also check t.textContent in case innerText lost relevant text
+                f"var tc=(t.textContent||'').trim().toLowerCase();"
+                f"if(tc!==txt&&tc.indexOf('{target_lower}')!==-1)return'verified';"
+                # Check input/select values on the trigger itself
+                f"var ins=t.querySelectorAll('input,select');"
+                f"for(var i=0;i<ins.length;i++){{if((ins[i].value||'').toLowerCase().indexOf('{target_lower}')!==-1)return'verified';}}"
                 f"var area=t.closest('[class*=form-item],fieldset,div');"
                 f"if(!area)return'not verified';"
-                f"var hidden=area.querySelector('input[type=hidden]');"
-                f"if(hidden&&hidden.value.toLowerCase().indexOf('{target_lower}')!==-1)return'verified';"
+                f"var allInputs=area.querySelectorAll('input,select');"
+                f"for(var j=0;j<allInputs.length;j++){{if((allInputs[j].value||'').toLowerCase().indexOf('{target_lower}')!==-1)return'verified';}}"
                 f"return'no';}})()"
             )
             verified = str(self.cdp.eval(verify_js)).strip().strip('"')
@@ -502,7 +538,7 @@ class RadioStrategy:
 
           return JSON.stringify(groups.slice(0, 10));
         })()"""
-        raw = cdp.eval(js, frame_id)
+        raw = cdp.eval(js, frame_id=frame_id)
         try:
             raw_groups = json.loads(raw) if isinstance(raw, str) else raw
             if isinstance(raw_groups, str):
@@ -743,7 +779,7 @@ class RadioStrategy:
                 f"}}}}"
                 f"return JSON.stringify({{found:false}});}})()"
             )
-            raw = cdp.eval(find_js, frame_id)
+            raw = cdp.eval(find_js, frame_id=frame_id)
             try:
                 find_result = json.loads(raw) if isinstance(raw, str) else raw
                 if isinstance(find_result, str):
@@ -795,7 +831,7 @@ class RadioStrategy:
                     f"return JSON.stringify({{ok:true,checked:true}});"
                     f"}})()"
                 )
-            raw = cdp.eval(activate_js, frame_id)
+            raw = cdp.eval(activate_js, frame_id=frame_id)
             try:
                 activate_result = json.loads(raw) if isinstance(raw, str) else raw
                 if isinstance(activate_result, str):

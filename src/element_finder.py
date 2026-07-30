@@ -58,7 +58,7 @@ class ElementFinder:
                 f"if(best){{best.setAttribute('data-target','x');return'yes';}}"
                 f"return'no';}})()"
             )
-            result = self.cdp.eval(js, frame_id)
+            result = self.cdp.eval(js, frame_id=frame_id)
             if "yes" in result:
                 return '[data-target="x"]'
             return None
@@ -90,5 +90,5 @@ class ElementFinder:
             f"var cs=window.getComputedStyle(p);if(cs&&cs.display==='none')return'no';}}}}"
             f"return'no';}})()"
         )
-        result = self.cdp.eval(js, frame_id)
+        result = self.cdp.eval(js, frame_id=frame_id)
         return "yes" in result
