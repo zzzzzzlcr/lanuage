@@ -523,17 +523,11 @@ def _result_is_used(call_node: ast.Call, parent: ast.AST) -> bool:
 
 
 def _iter_nodes(tree: ast.AST):
-    """Yield (node, parent) pairs for all nodes in the tree."""
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            yield (child, node)
-            yield from _iter_child_nodes_rec(child, node)
-
-
-def _iter_child_nodes_rec(node: ast.AST, parent: ast.AST):
-    for child in ast.iter_child_nodes(node):
-        yield (child, node)
-        yield from _iter_child_nodes_rec(child, node)
+    """Yield each (child, parent) pair exactly once.
+    ast.walk handles depth — iter_child_nodes at each level gives the pairs."""
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            yield (child, parent)
 
 
 def test_no_bare_click_form():
@@ -558,6 +552,34 @@ def test_no_bare_click_form():
                             f"{py_file.name}:{child.lineno}: {name} "
                             f"return value not captured or .ok unchecked")
     assert not violations, "\n".join(violations)
+```
+
+---
+
+## 六-B、.ok 迁移表（实施阶段 7-10 参考）
+
+AST 守卫验证迁移完成，但实施时需要精确知道每个调用点的位置和改法：
+
+| 文件 | 方法 | `cdp.click` | `cdp.form` | 变更 |
+|------|------|:---:|:---:|------|
+| `json_executor._execute_step` | click branch | 2 | 0 | `not result.ok` → retry or fail |
+| `json_executor._execute_step` | click text-find | 1 | 0 | `not result.ok` → return False |
+| `json_executor._execute_step` | form fallback | 0 | 1 | `.strip()` → `result.raw_output` |
+| `json_executor._smart_form` | custom select open | 3 | 0 | `not result.ok` → skip |
+| `json_executor._smart_form` | select/checkbox/fill | 0 | 5 | `.strip()` → `result.raw_output` |
+| `json_executor._select_option` | scoped/global label click | 3 | 0 | `not result.ok` → return False |
+| `json_executor._run_stateful` | auto-advance click | 1 | 0 | `not result.ok` → skip |
+| `json_executor._quiz_loop` | option/next click | 2 | 0 | `not result.ok` → skip |
+| `json_pipeline._pipeline_form` | form submit | 0 | 1 | **补全 frame_id + check**；return `result.ok` |
+| `json_pipeline._run_one_step` | click branch | 1 | 0 | `not result.ok` → return error |
+| `select_explorer.SelectExplorer` | trigger/option click | 2 | 0 | `not result.ok` → return error status |
+| `select_explorer._try_native` | native form | 0 | 1 | `not result.ok` → return NOT_VERIFIED |
+| **合计** | | **15** | **9** | |
+
+搜索命令（实施时用）：
+```bash
+grep -rn "cdp\.click\|self\.cdp\.click\|cdp\.form\|self\.cdp\.form" src/*.py \
+  | grep -v "\.ok\|result\|#\|test_"
 ```
 
 ---
