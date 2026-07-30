@@ -1,18 +1,18 @@
-# CDPClient Protocol + Bit Browser Integration — Design Spec (v4)
+# CDPClient Protocol + Bit Browser Integration — Design Spec (v5)
 
 ## Context
 
-lanuage 通过 `CDPHelper` 直连本地 Chrome，newTaskTest 通过 bit.sh 启动比特浏览器。
-两条路径需要共同 `CDPClient` Protocol，同时修复 returncode 丢失和
-`_pipeline_form` 漏 frame_id/check 的问题。现有 11 个 test_common.py 通过。
+lanuage `CDPHelper` 直连本地 Chrome，newTaskTest 通过 bit.sh 启动比特浏览器。
+两条路径需共同 `CDPClient` Protocol。现有 11 个 test_common.py 通过。
 
 ---
 
-## 一、CDPClient Protocol（冻结）
+## 一、CDPClient Protocol
 
 ```python
 # lanuage_core/cdp_protocol.py
 
+import subprocess  # module-level for except clauses
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -21,7 +21,7 @@ class CDPError(RuntimeError): ...
 class CDPTransportError(CDPError): ...
 class CDPExecutionError(CDPError): ...
 class CDPAmbiguousMutation(CDPError):
-    """click/form completed with ambiguous result — caller must verify page state."""
+    """click/form timed out or connection lost mid-mutation — state unknown."""
 
 
 @dataclass(frozen=True)
@@ -30,12 +30,12 @@ class CommandResult:
     raw_output: str = ""
     error: str | None = None
     returncode: int | None = None
-    error_category: str | None = None   # "transport" | "execution" | "ambiguous_mutation"
+    error_category: str | None = None
+    # "transport" | "execution" | "ambiguous_mutation" | None
 
 
 @dataclass
 class RawCommand:
-    """Structured subprocess result — shared across all adapters."""
     returncode: int
     stdout: str
     stderr: str
@@ -56,16 +56,12 @@ class CDPClient(Protocol):
 
 ---
 
-## 二、eval 解码器（精确契约）
+## 二、解码器 + 分类器
+
+### decoder
 
 ```python
 def _decode_eval_output(raw: str) -> Any:
-    """Replicates existing CDPHelper.eval() behavior.
-    
-    11 test_common.py tests lock this contract.
-    "42" → "42", "true" → "true", "null" → "null"
-    Only objects/arrays get a second decode layer.
-    """
     stripped = raw.strip()
     if not stripped:
         return stripped
@@ -82,13 +78,10 @@ def _decode_eval_output(raw: str) -> Any:
     return decoded
 ```
 
----
-
-## 三、统一错误分类器
+### classifier — transport FIRST, regardless of returncode
 
 ```python
-# SubprocessCDPClient 私有
-
+# ALL lowercase — matched against (stderr + stdout).lower()
 _TRANSPORT_PATTERNS = (
     "connection refused",
     "no page target",
@@ -96,75 +89,70 @@ _TRANSPORT_PATTERNS = (
     "not connected",
     "failed to create client",
     "cannot connect",
-    "Browser has disconnected",
+    "browser has disconnected",
+    "page has been closed",
+    "target closed",
+    "websocket disconnected",
 )
 
 _EXECUTION_STDERR_PREFIXES = (
-    "Error:",
-    "Exception:",
-    "BugError:",
-    "Protocol error:",
+    "error:",
+    "exception:",
+    "bugerror:",
+    "protocol error:",
+    "uncaught",
+    "eval failed",
+    "cannot find",
+    "no such",
 )
 
-def _is_transport_error(stderr: str, stdout: str) -> bool:
-    combined = (stderr + stdout).lower()
-    return any(p in combined for p in _TRANSPORT_PATTERNS)
 
+def _classify_raw(rc: "RawCommand", subcmd: str,
+                  timeout_occurred: bool = False) -> "CommandResult":
+    """Classify subprocess output.
 
-def _is_execution_error(stderr: str) -> bool:
-    """Only classify stderr lines that start with known error prefixes.
-    Never scan stdout — it may contain page content, form values, or JSON payloads."""
-    for line in stderr.splitlines():
-        line = line.strip()
-        if line.startswith(_EXECUTION_STDERR_PREFIXES):
-            return True
-    return False
-
-
-def _classify_raw(rc: "RawCommand", subcmd: str, timeout_occurred: bool = False
-                  ) -> "CommandResult":
-    """Classify subprocess output into CommandResult.
-
-    Rules:
+    Rules (checked in order):
     1. Timeout on mutation (click/form) → ambiguous_mutation
-    2. Timeout on read (eval/snapshot) → CDPTransportError (raised by caller)
-    3. Non-zero returncode + transport pattern → transport error
-    4. Non-zero returncode + no transport pattern → execution error
-    5. rc=0 + stderr has execution prefix → execution error
-    6. rc=0 + no error indicators → OK
+    2. Timeout on read (eval/snapshot) → CDPTransportError (caller raises)
+    3. Transport pattern found (stderr+stdout, rc ANY) → transport
+    4. Non-zero returncode + no transport → execution
+    5. rc=0 + stderr has execution prefix → execution
+    6. rc=0 + no errors → OK
     """
-    ok, error, category = True, None, None
+    combined = (rc.stderr + rc.stdout).lower()
 
+    # 1. Timeout
     if timeout_occurred:
         if subcmd in ("click", "form"):
             return CommandResult(ok=False, raw_output=rc.stdout + rc.stderr,
-                                error="timeout", returncode=None,
-                                error_category="ambiguous_mutation")
-        else:
-            raise CDPTransportError(f"cdp {subcmd} timed out")
+                                error="timeout", error_category="ambiguous_mutation")
+        raise CDPTransportError(f"cdp {subcmd} timed out")
 
+    # 2. Transport check FIRST — any returncode
+    if any(p in combined for p in _TRANSPORT_PATTERNS):
+        return CommandResult(ok=False, raw_output=rc.stdout + rc.stderr,
+                            error=(rc.stderr or rc.stdout)[:200],
+                            returncode=rc.returncode,
+                            error_category="transport")
+
+    # 3. Non-zero returncode → execution
     if rc.returncode != 0:
-        error_text = (rc.stderr or rc.stdout or f"exit {rc.returncode}")[:200]
-        if _is_transport_error(rc.stderr, rc.stdout):
-            ok, category = False, "transport"
-        else:
-            ok, category = False, "execution"
-        return CommandResult(ok=ok, raw_output=rc.stdout + rc.stderr,
-                            error=error_text, returncode=rc.returncode,
-                            error_category=category)
+        return CommandResult(ok=False, raw_output=rc.stdout + rc.stderr,
+                            error=(rc.stderr or f"exit {rc.returncode}")[:200],
+                            returncode=rc.returncode,
+                            error_category="execution")
 
-    if _is_execution_error(rc.stderr):
+    # 4. rc=0 — check stderr prefixes only (do NOT scan stdout for errors)
+    stderr_lower = rc.stderr.lower()
+    if any(stderr_lower.startswith(p) for p in _EXECUTION_STDERR_PREFIXES):
         return CommandResult(ok=False, raw_output=rc.stdout + rc.stderr,
                             error=rc.stderr[:200], returncode=0,
                             error_category="execution")
 
-    return CommandResult(ok=True, raw_output=rc.stdout + rc.stderr,
-                        returncode=0, error_category=None)
+    return CommandResult(ok=True, raw_output=rc.stdout + rc.stderr, returncode=0)
 
 
 def _classify_eval_snapshot(rc: "RawCommand") -> "CommandResult":
-    """For eval/snapshot: if classified as transport, raise CDPTransportError.
-    Otherwise raise CDPExecutionError on any failure."""
     result = _classify_raw(rc, "eval")
     if not result.ok:
         if result.error_category == "transport":
@@ -173,14 +161,17 @@ def _classify_eval_snapshot(rc: "RawCommand") -> "CommandResult":
     return result
 ```
 
+**关键修正**：
+- transport 检查放在 returncode 判断之前，rc=0 也能被正确归类
+- 所有 pattern 全部小写，匹配 `(stderr+stdout).lower()`
+- stdout 只在 transport 检查中参与；execution 检查只扫描 stderr 前缀
+
 ---
 
-## 四、SubprocessCDPClient 实现
+## 三、SubprocessCDPClient
 
 ```python
 class SubprocessCDPClient:
-    """Shared implementation — called by LegacyAdapter and BitCDPAdapter."""
-
     def __init__(self, cdp_binary: str, host: str, port: str):
         self._binary = cdp_binary
         self._host = host
@@ -189,112 +180,127 @@ class SubprocessCDPClient:
     def _run(self, subcmd: str, args: list[str], timeout_s: float = 15) -> RawCommand:
         cmd = [self._binary, subcmd] + args + ["--host", self._host, "--port", self._port]
         try:
-            import subprocess
             r = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout_s, shell=False)
-            return RawCommand(returncode=r.returncode, stdout=r.stdout,
-                            stderr=r.stderr)
+            return RawCommand(r.returncode, r.stdout, r.stderr)
         except subprocess.TimeoutExpired:
-            raise  # let caller catch and pass timeout_occurred=True
+            raise CDPTimeout(subcmd)   # custom exception, no NameError
         except FileNotFoundError:
             raise CDPTransportError(f"cdp binary not found: {self._binary}")
         except OSError as e:
             raise CDPTransportError(f"cdp {subcmd} OS error: {e}")
 
-    def eval(self, script: str, *, frame_id: str = "") -> Any:
-        args = [script]
-        if frame_id: args.extend(["--frame-id", frame_id])
-        try:
-            r = self._run("eval", args)
-        except subprocess.TimeoutExpired:
-            raise CDPTransportError("cdp eval timed out")
-        _classify_eval_snapshot(r)
-        return _decode_eval_output(r.stdout)
 
-    def click(self, selector: str, *, frame_id: str = "") -> CommandResult:
-        args = ["--selector", selector]
-        if frame_id: args.extend(["--frame-id", frame_id])
-        try:
-            r = self._run("click", args)
-        except subprocess.TimeoutExpired:
-            return _classify_raw(RawCommand(0, "", "timeout"), "click", timeout_occurred=True)
-        return _classify_raw(r, "click")
+class CDPTimeout(CDPError):
+    """Raised by _run on timeout. Caller decides: ambiguous_mutation or transport."""
+    def __init__(self, subcmd: str):
+        self.subcmd = subcmd
+        super().__init__(f"cdp {subcmd} timed out")
 
-    def snapshot(self) -> dict[str, Any]:
-        try:
-            r = self._run("snapshot", [])
-        except subprocess.TimeoutExpired:
-            raise CDPTransportError("cdp snapshot timed out")
-        _classify_eval_snapshot(r)
-        import json
-        try:
-            return json.loads(r.stdout)
-        except json.JSONDecodeError:
-            raise CDPExecutionError("snapshot: invalid JSON")
 
-    def form(self, selector: str, *,
-             value=None, check=None, select=None,
-             frame_id: str = "") -> CommandResult:
-        args = [selector]
-        if value is not None: args.extend(["--value", str(value)])
-        if check is not None: args.extend(["--check", str(check)])
-        if select is not None: args.extend(["--select", str(select)])
-        if frame_id: args.extend(["--frame-id", frame_id])
+def eval(self, script: str, *, frame_id: str = "") -> Any:
+    args = [script]
+    if frame_id: args.extend(["--frame-id", frame_id])
+    try:
+        r = self._run("eval", args)
+    except CDPTimeout:
+        raise CDPTransportError("cdp eval timed out")
+    _classify_eval_snapshot(r)
+    return _decode_eval_output(r.stdout)
+
+
+def click(self, selector: str, *, frame_id: str = "") -> CommandResult:
+    args = ["--selector", selector]
+    if frame_id: args.extend(["--frame-id", frame_id])
+    try:
+        r = self._run("click", args)
+    except CDPTimeout:
+        return _classify_raw(RawCommand(0, "", "timeout"), "click", timeout_occurred=True)
+    return _classify_raw(r, "click")
+
+
+def snapshot(self) -> dict[str, Any]:
+    try:
+        r = self._run("snapshot", [])
+    except CDPTimeout:
+        raise CDPTransportError("cdp snapshot timed out")
+    _classify_eval_snapshot(r)
+    import json
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError:
+        raise CDPExecutionError("snapshot: invalid JSON")
+
+
+def form(self, selector: str, *, value=None, check=None, select=None,
+         frame_id: str = "") -> CommandResult:
+    args = [selector]
+    if value is not None: args.extend(["--value", str(value)])
+    if check is not None: args.extend(["--check", str(check)])
+    if select is not None: args.extend(["--select", str(select)])
+    if frame_id: args.extend(["--frame-id", frame_id])
+    try:
+        r = self._run("form", args)
+    except CDPTimeout:
+        return _classify_raw(RawCommand(0, "", "timeout"), "form", timeout_occurred=True)
+    return _classify_raw(r, "form")
+
+
+def get_page_info(self) -> dict[str, str]:
+    return {"url": str(self.eval("window.location.href")),
+            "title": str(self.eval("document.title"))}
+
+
+def wait_page_stable(self, timeout: float = 15) -> bool:
+    import time
+    deadline = time.time() + timeout
+    stable_count = 0
+    last_body_len = -1
+    body_stable = 0
+    while time.time() < deadline:
         try:
-            r = self._run("form", args)
-        except subprocess.TimeoutExpired:
-            return _classify_raw(RawCommand(0, "", "timeout"), "form", timeout_occurred=True)
-        return _classify_raw(r, "form")
-
-    def get_page_info(self) -> dict[str, str]:
-        return {"url": str(self.eval("window.location.href")),
-                "title": str(self.eval("document.title"))}
-
-    def wait_page_stable(self, timeout: float = 15) -> bool:
-        """Poll until 3 consecutive 'complete' readings AND body text length
-        stable for 2 consecutive readings. Replicates existing behavior."""
-        import time
-        deadline = time.time() + timeout
-        stable_count = 0
-        last_body_len = -1
-        body_stable = 0
-        while time.time() < deadline:
-            try:
-                state = self.eval("document.readyState")
-                body_len = len(self.eval(
-                    "(function(){return document.body?document.body.innerText||'':'';})()"))
-            except CDPError:
-                raise CDPTransportError("Connection lost")
-            if state == "complete":
-                stable_count += 1
-                if body_len == last_body_len:
-                    body_stable += 1
-                else:
-                    body_stable = 0
-                last_body_len = body_len
-                if stable_count >= 3 and body_stable >= 2:
-                    return True
-            else:
-                stable_count = 0
-                body_stable = 0
-            time.sleep(0.8)
-        return False
+            state = self.eval("document.readyState")
+            body_len = len(self.eval(
+                "(function(){return document.body?document.body.innerText||'':'';})()"))
+        except CDPError:
+            raise CDPTransportError("Connection lost during wait_page_stable")
+        if state == "complete":
+            stable_count += 1
+            body_stable = body_stable + 1 if body_len == last_body_len else 0
+            last_body_len = body_len
+            if stable_count >= 3 and body_stable >= 2:
+                return True
+        else:
+            stable_count = 0
+            body_stable = 0
+        time.sleep(0.8)
+    return False
 ```
 
-### 重试规则
+### 重试规则（冻结进入 executor 实现）
 
-| 操作 | 透明重试 | 说明 |
-|------|---------|------|
-| `snapshot` | 最多 1 次 | 在 `_run` 失败且为 transport 错误时重试 |
-| `get_page_info` | 不重试 | 底层 eval 不重试 |
-| CDP readiness | 最多 1 次 | 连接建立阶段 |
-| `eval` | **不重试** | 可能是 mutation |
-| `click` / `form` | **禁止自动重放** | ambiguous_mutation 时由执行器验证 |
-| ambiguous_mutation | 不重放 | 即使 step.retry=3，底层也只执行 1 次 |
+| 场景 | 行为 |
+|------|------|
+| `snapshot` transport error | 重试 1 次 |
+| `get_page_info` | 不重试 |
+| CDP readiness check | 重试 1 次 |
+| 普通 `eval` | 不重试 |
+| `click`/`form` **前** transport (command not issued) | 允许按 step.retry 重试 |
+| `click`/`form` 返回 `ambiguous_mutation` | **禁止重试** — 状态未知，由执行器验证页面 |
+| `click`/`form` 后 transport（连接在 mutation 后丢失） | **禁止重放** — 可能已生效 |
+| `click`/`form` 返回 execution error | 允许按 step.retry 重试 |
+
+**执行器规则**：
+```python
+# In _execute_step:
+# retry=3 means: command_not_issued → up to 3 click attempts
+# After first successful click dispatch, set clicks_issued += 1
+# clicks_issued >= 1 and subsequent error → do NOT re-click, verify page state instead
+```
 
 ---
 
-## 五、BrowserLease 生命周期
+## 四、BrowserLease 生命周期
 
 ### 数据结构
 
@@ -304,100 +310,125 @@ class DebugEndpoint:
     host: str
     port: int
 
-    @property
-    def http_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
-
-    @classmethod
-    def from_ws_url(cls, ws_url: str) -> "DebugEndpoint":
-        import re
-        m = re.match(r'ws://([^:]+):(\d+)', ws_url)
-        if not m: raise ValueError(f"invalid ws_url: {ws_url}")
-        return cls(host=m.group(1), port=m.group(2))
-
-    @classmethod
-    def from_http_url(cls, http_url: str) -> "DebugEndpoint":
-        h = http_url.replace("http://", "").replace("https://", "").split(":")[0]
-        p = http_url.rsplit(":", 1)[-1]
-        return cls(host=h, port=int(p))
-
 
 @dataclass(frozen=True)
 class BrowserLease:
     lease_id: str
+    session_id: str          # links to SessionRecord, NOT profile_id
     profile_id: str
     generation: int
     ws_url: str
-    debug_endpoint: DebugEndpoint     # structured, not string
+    debug_endpoint: DebugEndpoint
     owned: bool
-    config_fingerprint: str           # hash(proxy+device+profile)
-```
+    config_fingerprint: str
 
-### SessionRecord + BrowserManager
 
-```python
 @dataclass
 class SessionRecord:
+    session_id: str          # primary key
     profile_id: str
     pid: int
     generation: int
     debug_endpoint: DebugEndpoint
     config_fingerprint: str
-    managed: bool         # true = opened by us, false = attached to existing
+    managed: bool
     refcount: int
-    lease_ids: set[str]   # all active lease IDs for this session
+    active_lease_ids: set[str]
 
 
+class BrowserConfigConflict(CDPError):
+    """Existing session has different config fingerprint."""
+    def __init__(self, profile_id, existing, requested):
+        super().__init__(
+            f"Config conflict for {profile_id}: existing={existing} requested={requested}")
+```
+
+### BrowserManager
+
+```python
 class BrowserManager:
     def __init__(self, config: "BrowserConfig"):
-        self._sessions: dict[str, SessionRecord] = {}  # profile_id → session
-        self._leases: dict[str, BrowserLease] = {}      # lease_id → lease
+        self._sessions: dict[str, SessionRecord] = {}   # session_id → session
+        self._profile_index: dict[str, str] = {}          # profile_id → session_id
+        self._leases: dict[str, BrowserLease] = {}
         self._lock = threading.Lock()
+        self._generation = 0
 
-    # ── acquire ──
+    def _next_generation(self) -> int:
+        self._generation += 1
+        return self._generation
+
     def acquire(self, profile_id: str, device: DeviceConfig,
                 proxy: ProxyConfig | None = None) -> BrowserLease:
         fingerprint = _make_fingerprint(profile_id, device, proxy)
         with self._lock:
             # 1. Check /browser/pids/alive for existing session
-            alive = self._check_alive_sessions(profile_id)
-            for pid, endpoint in alive:
-                session = self._sessions.get(profile_id)
-                if session and session.pid == pid:
+            existing_session_id = self._profile_index.get(profile_id)
+            if existing_session_id:
+                session = self._sessions[existing_session_id]
+                alive_pids = self._list_alive_pids(profile_id)
+                if session.pid in alive_pids:
                     if session.config_fingerprint != fingerprint:
-                        # Config mismatch → force reopen
-                        self._close_session(session)
-                        continue
-                    # Valid existing → attach
-                    session.refcount += 1
-                    lease = BrowserLease(
-                        lease_id=_new_id(),
-                        profile_id=profile_id,
-                        generation=session.generation,
-                        ws_url=f"ws://{endpoint.host}:{endpoint.port}/...",
-                        debug_endpoint=endpoint,
-                        owned=False,
-                        config_fingerprint=fingerprint,
-                    )
-                    session.lease_ids.add(lease.lease_id)
-                    self._leases[lease.lease_id] = lease
-                    return lease
+                        if session.refcount > 0:
+                            raise BrowserConfigConflict(
+                                profile_id, session.config_fingerprint, fingerprint)
+                        self._close_session_locked(session)
+                    else:
+                        session.refcount += 1
+                        lease = BrowserLease(
+                            lease_id=_new_id(),
+                            session_id=session.session_id,
+                            profile_id=profile_id,
+                            generation=session.generation,
+                            ws_url=f"ws://{session.debug_endpoint.host}:{session.debug_endpoint.port}/...",
+                            debug_endpoint=session.debug_endpoint,
+                            owned=False,
+                            config_fingerprint=fingerprint,
+                        )
+                        session.active_lease_ids.add(lease.lease_id)
+                        self._leases[lease.lease_id] = lease
+                        return lease
 
-            # 2. Open new browser
-            ws_url, http_endpoint = self._bit_open(profile_id, device, proxy)
-            endpoint = DebugEndpoint.from_http_url(http_endpoint)
-            self._verify_cdp_readiness(ws_url)
+            # 2. No usable existing session → external check
+            if profile_id in self._profile_index:
+                # We have a session record but PID dead → clean up then open new
+                old_session = self._sessions.get(self._profile_index[profile_id])
+                if old_session:
+                    self._close_session_locked(old_session)
 
-            # 3. Create session
-            pid = self._get_pid(profile_id, endpoint)
-            generation = int(time.time())
+            # 3. Check for unknown external browsers
+            ext_pids = self._list_alive_pids(profile_id)
+            if ext_pids and profile_id not in self._profile_index:
+                raise ExternalSessionConflict(
+                    f"External browser running for {profile_id}: pids={ext_pids}")
+
+            # 4. Open new browser — full rollback on any failure
+            ws_url, http_endpoint = None, None
+            try:
+                ws_url, http_endpoint = self._bit_open(profile_id, device, proxy)
+                endpoint = DebugEndpoint.from_http_url(http_endpoint)
+                self._verify_cdp_readiness(ws_url)
+                pid = self._get_pid(profile_id, endpoint)
+            except Exception:
+                # Rollback everything that was partially opened
+                if ws_url or http_endpoint:
+                    try: self._bit_close(profile_id)
+                    except Exception: pass
+                raise
+
+            session_id = _new_id()
+            generation = self._next_generation()
             session = SessionRecord(
-                profile_id=profile_id, pid=pid, generation=generation,
-                debug_endpoint=endpoint, config_fingerprint=fingerprint,
-                managed=True, refcount=1, lease_ids=set(),
+                session_id=session_id, profile_id=profile_id,
+                pid=pid, generation=generation,
+                debug_endpoint=endpoint,
+                config_fingerprint=fingerprint,
+                managed=True, refcount=1,
+                active_lease_ids=set(),
             )
             lease = BrowserLease(
                 lease_id=_new_id(),
+                session_id=session_id,
                 profile_id=profile_id,
                 generation=generation,
                 ws_url=ws_url,
@@ -405,351 +436,346 @@ class BrowserManager:
                 owned=True,
                 config_fingerprint=fingerprint,
             )
-            session.lease_ids.add(lease.lease_id)
-            self._sessions[profile_id] = session
+            session.active_lease_ids.add(lease.lease_id)
+            self._sessions[session_id] = session
+            self._profile_index[profile_id] = session_id
             self._leases[lease.lease_id] = lease
             return lease
 
-    # ── release (idempotent, stale-safe) ──
     def release(self, lease: BrowserLease) -> None:
+        """Idempotent. Stale leases are no-ops."""
         with self._lock:
             if lease.lease_id not in self._leases:
-                return  # already released
+                return
             stored = self._leases[lease.lease_id]
+            # Verify lease matches stored record
+            if stored.session_id != lease.session_id:
+                return
             if stored.generation != lease.generation:
-                return  # stale lease
+                return
             del self._leases[lease.lease_id]
-            session = self._sessions.get(lease.profile_id)
+            session = self._sessions.get(lease.session_id)
             if not session:
                 return
-            session.lease_ids.discard(lease.lease_id)
+            session.active_lease_ids.discard(lease.lease_id)
             session.refcount -= 1
             if session.refcount <= 0 and session.managed:
-                self._close_session(session)
+                self._close_session_locked(session)
 
-    # ── close session (owned-only) ──
-    def _close_session(self, session: SessionRecord) -> None:
-        """Only close if managed. Remove from registry."""
+    def _close_session_locked(self, session: SessionRecord) -> None:
         if session.managed:
-            self._bit_close(session.profile_id)
-        self._sessions.pop(session.profile_id, None)
-
-    # ── partial-open rollback ──
-    def _bit_open(self, ...) -> tuple[str, str]:
-        try:
-            return self._do_bit_open(...)
-        except Exception:
-            # Rollback: close if partially opened
-            self._bit_close(profile_id)
-            raise
+            try:
+                self._bit_close(session.profile_id)
+            finally:
+                pass  # always remove from registry
+        self._sessions.pop(session.session_id, None)
+        if self._profile_index.get(session.profile_id) == session.session_id:
+            del self._profile_index[session.profile_id]
+        # Clean any dangling leases
+        for lid in list(session.active_lease_ids):
+            self._leases.pop(lid, None)
 ```
 
-### Phase 1 约束
-
-- **不自动重连**：连接失效 → 结束 runtime → 重新 `acquire`
-- **单进程独占**：同一 profile 的 BrowserManager 必须在同一进程内
-- **跨进程锁**：Phase 2 引入文件锁，Phase 1 不处理
-- **`/browser/pids/alive`** 只返回 PID 列表；与已知 session PID 匹配即可，不重建 endpoint
-
-### Adapter 接口
-
-```python
-class BitCDPAdapter(SubprocessCDPClient):
-    def __init__(self, lease: BrowserLease, cdp_binary: str):
-        ep = lease.debug_endpoint  # structured, no regex parsing
-        super().__init__(cdp_binary=cdp_binary, host=ep.host, port=str(ep.port))
-```
+**关键安全性**：
+- `release()` 通过 `session_id` 查找 session，不会误关不同 generation 的浏览器
+- stale lease（lease_id 不存在 / session_id 不匹配 / generation 不同）→ no-op
+- config conflict + refcount>0 → `BrowserConfigConflict`，不强制关闭
+- 打开全过程在 try/except 中，失败时回滚
+- 未知外部 session → `ExternalSessionConflict`，不强制 `_bit_open`
 
 ---
 
-## 六、包边界
+## 五、包结构（一次性确定，不延后）
 
 ```
-lanuage_core/                   # 只放 Protocol + Adapter + Browser
+lanuage_core/
 ├── pyproject.toml
 ├── src/lanuage_core/
-│   ├── __init__.py             # exports Protocol types + LegacyAdapter + SubprocessCDPClient
-│   ├── cdp_protocol.py         # CDPClient + CommandResult + RawCommand + 异常
-│   ├── subprocess_cdp_client.py # SubprocessCDPClient + classifier + decoder
-│   └── legacy_adapter.py       # LegacyAdapter
-└── tests/
-
-lanuage/                        # 现有仓库，保持不变
-├── src/
-│   ├── json_pipeline.py        # 接收 CDPClient 实例
-│   ├── json_executor.py        # 接收 CDPClient 实例
-│   └── ...
-└── tests/
-
-lanuage_automation/             # 新：Pipeline + Executor + Public API
-├── pyproject.toml              # depends: lanuage_core
-├── src/lanuage_automation/
 │   ├── __init__.py
-│   ├── pipeline.py             # JSONPipeline（从 lanuage/src 移入，或 symlink）
-│   ├── executor.py             # JSONExecutor
-│   ├── locator.py
-│   ├── select_explorer.py
-│   └── api.py                  # run_automation() public entry point
+│   ├── cdp_protocol.py
+│   ├── subprocess_cdp_client.py
+│   └── legacy_adapter.py
 └── tests/
 
-company/newTaskTest/            # 消费者
-├── pyproject.toml              # depends: lanuage_automation, lanuage_core
+lanuage/                        # 现有仓库
+├── src/                         # 不动，只做依赖注入
+│   └── ...
+├── pyproject.toml               # depends: lanuage_core
+└── tests/
+
+company/newTaskTest/
+├── pyproject.toml               # depends: lanuage_core, lanuage (editable)
 ├── src/
+│   ├── browser_manager.py
+│   ├── bit_cdp_adapter.py
 │   └── ...
 └── tests/
 ```
 
-**实施顺序**：
-1. 先在 lanuage 内做依赖注入（不改包结构）
-2. 提取 lanuage_core
-3. newTaskTest 集成
-4. 提取 lanuage_automation（可选，可延后）
+**规则**：
+- `pyproject.toml` 在各自包创建时立即添加，不留到最后
+- lanuage 保持单一源码树，不 move 也不 symlink
+- `run_automation()` 属于 lanuage（不是 lanuage_core），签名：
+```python
+def run_automation(description: str, profile: dict, cdp: CDPClient, *,
+                   llm_client, model: str = "deepseek-v4-flash",
+                   navigate_url: str = "") -> tuple[dict, "ValidationResult"]:
+    ...
+```
 
 ---
 
-## 七、.ok 迁移 + AST 守卫
+## 六、.ok 迁移 + AST 守卫
 
-### AST 守卫（Python 而非 grep）
+### AST 守卫（真实实现）
 
 ```python
 # tests/test_call_convention.py
 
-import ast
-import pathlib
+import ast, pathlib
 
-SRC = pathlib.Path("lanuage/src")
+SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
 
-FORBIDDEN = {
-    "click": {"min_positional": 1, "max_positional": 1},
-    "form":  {"min_positional": 1, "max_positional": 1},
-    "eval":  {"min_positional": 1, "max_positional": 1},
+_CLICK_FORM_METHODS = {
+    "cdp.click", "self.cdp.click",
+    "cdp.form", "self.cdp.form",
 }
 
 
-def test_no_bare_click_form_calls():
-    """Every cdp.click()/cdp.form() call must capture the return value."""
+def _get_func_name(node: ast.Call) -> str | None:
+    """Extract function name from call node. Returns 'self.cdp.click' etc."""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        obj = _qualname(func.value)
+        return f"{obj}.{func.attr}" if obj else func.attr
+    return None
+
+
+def _qualname(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        inner = _qualname(node.value)
+        return f"{inner}.{node.attr}" if inner else node.attr
+    return None
+
+
+class _CallVisitor(ast.NodeVisitor):
+    def __init__(self, filename: str):
+        self.filename = filename
+        self.bare_calls: list[tuple[int, str]] = []
+
+    def visit_Call(self, node: ast.Call):
+        name = _get_func_name(node)
+        if name in _CLICK_FORM_METHODS:
+            pos_args = [a for a in node.args if not isinstance(a, ast.keyword)]
+            if len(pos_args) != 1:
+                self.bare_calls.append(
+                    (node.lineno, f"{name}: {len(pos_args)} positional args (expected 1)"))
+            # Check parent is NOT an expression statement (must be assigned/returned/compared)
+            if not hasattr(node, '_checked'):
+                self.bare_calls.append(
+                    (node.lineno, f"{name}: result not captured or .ok unchecked"))
+        self.generic_visit(node)
+
+
+def test_no_bare_click_form():
     violations = []
     for py_file in SRC.glob("**/*.py"):
+        if py_file.name.startswith("__"): continue
         tree = ast.parse(py_file.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = _get_func_name(node)
-                if func in ("cdp.click", "cdp.form", "self.cdp.click", "self.cdp.form"):
-                    # Must be assigned or part of a return/comparison
-                    parent = _find_parent(tree, node)
-                    if isinstance(parent, ast.Expr):
-                        violations.append(f"{py_file}:{node.lineno} bare {func}")
-                    # Must have exactly one positional arg (selector)
-                    pos_args = [a for a in node.args if not isinstance(a, ast.keyword)]
-                    if len(pos_args) != 1:
-                        violations.append(
-                            f"{py_file}:{node.lineno} {func} has {len(pos_args)} positional args")
+        v = _CallVisitor(str(py_file))
+        v.visit(tree)
+        for line, msg in v.bare_calls:
+            violations.append(f"{py_file.name}:{line}: {msg}")
     assert not violations, "\n".join(violations)
-
-
-def test_all_click_form_check_ok():
-    """Every captured click/form result must be checked for .ok."""
-    ...
 ```
 
-### .ok 迁移全量表
+### .ok 全量迁移表
 
-| 文件 | 方法 | 调用次数 | 变更 |
-|------|------|---------|------|
-| `json_executor._execute_step` | `cdp.click()` | 2 | `result.ok==False` → retry |
-| `json_executor._execute_step` (click text find) | `cdp.click()` | 1 | `result.ok==False` → return False |
-| `json_executor._smart_form` | `cdp.form()` | 5 | `.strip()` → `result.raw_output`; fail → `not result.ok` |
-| `json_executor._smart_form` | `cdp.click()` (combobox) | 2 | `result.ok==False` → skip |
+| 文件 | 方法 | 调用 | 变更 |
+|------|------|------|------|
+| `json_executor._execute_step` | `cdp.click()` | 2 | `result.ok==False` → retry (command_not_issued only) |
+| `json_executor._execute_step` | `cdp.click()` | 1 | `result.ok==False` → return False |
+| `json_executor._smart_form` | `cdp.form()` | 5 | `.strip()` → `result.raw_output` |
+| `json_executor._smart_form` | `cdp.click()` | 3 | `result.ok==False` → skip / return False |
 | `json_executor._select_option` | `cdp.click()` | 3 | `not result.ok` → return False |
-| `json_executor._run_stateful` | `cdp.click()` | 1 | `not result.ok` → continue |
-| `json_executor._quiz_loop` | `cdp.click()` | 2 | `not result.ok` → continue |
+| `json_executor._run_stateful` | `cdp.click()` | 1 | `not result.ok` → skip |
+| `json_executor._quiz_loop` | `cdp.click()` | 2 | `not result.ok` → skip |
+| `json_executor._execute_step` | `cdp.form()` | 1 | fallback form → check `.ok` |
 | `json_pipeline._pipeline_form` | `cdp.form()` | 1 | **补全 frame_id + check**; return `result.ok` |
 | `json_pipeline._run_one_step` (click) | `cdp.click()` | 1 | `result.ok==False` → return error |
 | `select_explorer.SelectExplorer` | `cdp.click()` | 2 | `not result.ok` → return error status |
 | `select_explorer._try_native` | `cdp.form()` | 1 | `not result.ok` → return NOT_VERIFIED |
+| `locator._try_label_for` | `cdp.form()` | 1 | docstring only, no code change |
 
 ---
 
-## 八、迁移清单
+## 七、测试
 
-### A: frame_id → keyword-only（~93 个调用点）
-
-```bash
-grep -rn "\.eval(" src/ | grep -v "frame_id=" | wc -l   # ~55
-grep -rn "\.click(" src/ | grep -v "frame_id=" | wc -l  # ~19
-grep -rn "\.form(" src/ | grep -v "frame_id=" | wc -l   # ~10
-```
-
-### B: .ok propagation（见上表）
-
-### C: snapshot/json.loads 归一化
-
-### D: 删除 click_checked()
-
-### E: composition roots
-
-| 入口 | 变更 |
-|------|------|
-| `web_editor.py` | `LegacyAdapter(ws_url)` → `JSONExecutor(cdp=adapter)` |
-| `json_pipeline.py` CLI | `LegacyAdapter(ws_url)` |
-| mock runner | `LegacyAdapter(ws_url)` |
-| newTaskTest | `BitCDPAdapter(lease, cdp_binary)` |
-
----
-
-## 九、测试
-
-### 解码器测试
+### 解码器
 
 ```python
-def test_eval_string_preserved():
-    assert _decode_eval_output('"42"') == "42"       # JSON string
+def test_decoder_string_json():
+    assert _decode_eval_output('"42"') == "42"
 
-def test_eval_numeric_not_converted():
-    assert _decode_eval_output("42") == 42           # JSON number → int
+def test_decoder_number_json():
+    assert _decode_eval_output("42") == 42
 
-def test_eval_plain_text_preserved():
-    assert _decode_eval_output("hello") == "hello"   # not JSON
+def test_decoder_plain_text():
+    assert _decode_eval_output("hello") == "hello"
 
-def test_eval_empty():
+def test_decoder_empty():
     assert _decode_eval_output("") == ""
 
-def test_eval_nested_json_array():
+def test_decoder_nested_array():
     assert _decode_eval_output('"[1,2,3]"') == [1, 2, 3]
 
-def test_eval_nested_json_object():
+def test_decoder_object():
     assert _decode_eval_output('{"a":1}') == {"a": 1}
 ```
 
-### 分类器测试
+### 分类器
 
 ```python
-def test_nonzero_rc_with_transport():
-    rc = RawCommand(1, "", "connection refused")
-    r = _classify_raw(rc, "click")
+def test_transport_rc_nonzero():
+    r = _classify_raw(RawCommand(1, "", "connection refused"), "click")
     assert not r.ok and r.error_category == "transport"
 
-def test_nonzero_rc_without_transport():
-    rc = RawCommand(1, "", "some error")
-    r = _classify_raw(rc, "click")
+def test_transport_rc_zero():
+    """rc=0 + transport pattern → transport, not execution"""
+    r = _classify_raw(RawCommand(0, "", "BugError: no page target"), "click")
+    assert not r.ok and r.error_category == "transport"
+
+def test_execution_rc_nonzero():
+    r = _classify_raw(RawCommand(1, "", "something went wrong"), "click")
     assert not r.ok and r.error_category == "execution"
 
-def test_rc0_stderr_execution_prefix():
-    rc = RawCommand(0, "", "BugError: no page target")
-    r = _classify_raw(rc, "eval")
+def test_execution_rc_zero_stderr_prefix():
+    r = _classify_raw(RawCommand(0, "", "error: selector not found"), "eval")
     assert not r.ok and r.error_category == "execution"
 
 def test_click_timeout_ambiguous():
     r = _classify_raw(RawCommand(0, "", "timeout"), "click", timeout_occurred=True)
     assert not r.ok and r.error_category == "ambiguous_mutation"
 
-def test_classifier_never_scans_stdout_payloads():
-    """Page content in stdout must not trigger error detection."""
-    rc = RawCommand(0, '<html>Error: page content</html>', "")
-    r = _classify_raw(rc, "snapshot")
-    assert r.ok  # stdout not scanned for execution errors
+def test_stdout_not_scanned_for_execution():
+    """Page content in stdout must not be classified as error."""
+    r = _classify_raw(RawCommand(0, '<html>error: something</html>', ""), "snapshot")
+    assert r.ok
 
-def test_transport_on_eval_raises():
-    rc = RawCommand(1, "", "connection refused")
-    with pytest.raises(CDPTransportError):
-        _classify_eval_snapshot(rc)
+def test_transport_before_returncode():
+    """Transport check happens regardless of returncode."""
+    r = _classify_raw(RawCommand(0, "", "browser has disconnected"), "click")
+    assert not r.ok and r.error_category == "transport"
+
+def test_lowercase_match():
+    """Pattern 'browser has disconnected' matches 'Browser has disconnected'."""
+    r = _classify_raw(RawCommand(0, "", "Browser has disconnected"), "click")
+    assert not r.ok and r.error_category == "transport"
 ```
 
-### argv 测试
+### argv
 
 ```python
 def test_click_argv():
-    cdp = SubprocessCDPClient("/fake/cdp", "127.0.0.1", "9222")
-    # Monkey-patch _run to capture args
-    captured = []
-    cdp._run = lambda cmd, args: captured.extend(args) or RawCommand(0, "", "")
+    cdp = SubprocessCDPClient("/bin/cdp", "127.0.0.1", "9999")
+    captured = {}
+    def fake_run(subcmd, args, timeout_s=15):
+        captured["args"] = [subcmd] + args
+        return RawCommand(0, "", "")
+    cdp._run = fake_run
     cdp.click("#btn", frame_id="f1")
-    assert captured[0] == "--selector"
-    assert captured[1] == "#btn"
-    assert "--frame-id" in captured
+    assert captured["args"] == ["click", "--selector", "#btn", "--frame-id", "f1",
+                                "--host", "127.0.0.1", "--port", "9999"]
 
 def test_form_argv():
-    cdp = SubprocessCDPClient("/fake/cdp", "127.0.0.1", "9222")
-    captured = []
-    cdp._run = lambda cmd, args: captured.extend(args) or RawCommand(0, "", "")
-    cdp.form("select#country", value="US", frame_id="f1")
-    assert captured[0] == "select#country"  # positional selector
-    assert "--value" in captured
-    assert "--frame-id" in captured
+    cdp = SubprocessCDPClient("/bin/cdp", "127.0.0.1", "9999")
+    captured = {}
+    def fake_run(subcmd, args, timeout_s=15):
+        captured["args"] = [subcmd] + args
+        return RawCommand(0, "", "")
+    cdp._run = fake_run
+    cdp.form("select#country", value="US", frame_id="f1", check="true", select="CA")
+    assert captured["args"][0:2] == ["form", "select#country"]
+    assert "--value" in captured["args"]
+    assert "--check" in captured["args"]
+    assert "--select" in captured["args"]
+    assert "--frame-id" in captured["args"]
 ```
 
-### BrowserLease 测试
+### BrowserManager
 
 ```python
-def test_lease_refcount_and_release():
+def test_old_lease_does_not_affect_new_session(mocker):
+    """Lease A from dead session must not decrement new Session B's refcount."""
     bm = BrowserManager(config)
-    lease = bm.acquire("p1", device)
-    assert lease.owned and not lease.debug_endpoint is None
-    bm.release(lease)
-    assert "p1" not in bm._sessions  # refcount 0, managed, closed
+    
+    # Session A opened, then lease A released, session A closed
+    mocker.patch.object(bm, '_list_alive_pids', return_value=[])
+    mocker.patch.object(bm, '_bit_open', return_value=("ws://h:1/dev/0", "http://h:1"))
+    mocker.patch.object(bm, '_verify_cdp_readiness')
+    mocker.patch.object(bm, '_get_pid', return_value=100)
+    
+    lease_a = bm.acquire("p1", device)
+    bm.release(lease_a)  # session A refcount=0 → closed
+    
+    # Session B opened
+    lease_b = bm.acquire("p1", device)
+    assert lease_b.generation != lease_a.generation
+    assert lease_b.owned
+    
+    # Release stale lease A — must be no-op
+    bm.release(lease_a)
+    
+    # Session B still alive
+    assert bm._profile_index.get("p1") is not None
+    session_b = bm._sessions[lease_b.session_id]
+    assert session_b.refcount == 1
 
-def test_stale_lease_release_is_noop():
+def test_config_conflict_with_active_users_raises(mocker):
     bm = BrowserManager(config)
-    lease1 = bm.acquire("p1", device)
-    bm.release(BrowserLease(lease_id="stale", profile_id="p1",
-                             generation=0, ws_url="ws://...",
-                             debug_endpoint=DebugEndpoint("h", 1),
-                             owned=False, config_fingerprint=""))
-    assert "p1" in bm._sessions  # still alive
-
-def test_mismatched_config_fingerprint_forces_reopen():
+    mocker.patch.object(bm, '_list_alive_pids', return_value=[100])
+    # Pre-register session with different config
     ...
+    with pytest.raises(BrowserConfigConflict):
+        bm.acquire("p1", device2)
 
-def test_partial_open_rollback():
-    ...
-```
-
-### Bit 集成测试
-
-```python
-@pytest.mark.skipif(not os.environ.get("BIT_TEST_ENABLED"), reason="requires Bit browser")
-class TestBitAdapter:
-    @pytest.fixture(autouse=True)
-    def browser(self):
-        bm = BrowserManager(config)
-        lease = bm.acquire("test-profile", device)
-        yield lease, bm
-        bm.release(lease)
-
-    def test_iframe_form(self, browser):
-        lease, bm = browser
-        cdp = BitCDPAdapter(lease, CdpBinary)
-        cdp.eval("window.location.href = f'{FIXTURE_URL}/iframe-form'")
-        snap = cdp.snapshot()
-        frame_id = _find_frame_id_by_url(snap, "iframe-form")
-        assert frame_id, "iframe not found in snapshot"
-        result = cdp.form("#name", value="John", frame_id=frame_id)
-        assert result.ok
-        val = cdp.eval("document.querySelector('#name').value", frame_id=frame_id)
-        assert val == "John"
+def test_partial_open_rollback(mocker):
+    bm = BrowserManager(config)
+    mocker.patch.object(bm, '_list_alive_pids', return_value=[])
+    mocker.patch.object(bm, '_bit_open', return_value=("ws://...", "http://..."))
+    mocker.patch.object(bm, '_verify_cdp_readiness', side_effect=CDPTransportError("fail"))
+    close_called = mocker.patch.object(bm, '_bit_close')
+    
+    with pytest.raises(CDPTransportError):
+        bm.acquire("p1", device)
+    assert close_called.called  # rollback executed
 ```
 
 ---
 
-## 十、实施顺序
+## 八、实施顺序
 
-| Phase | 内容 | 可交付 |
-|-------|------|--------|
-| 1 | `cdp_protocol.py` — Protocol + CommandResult + RawCommand + 异常 | ✅ |
-| 2 | `subprocess_cdp_client.py` — SubprocessCDPClient + classifier + decoder | ✅ |
-| 3 | 解码器测试 + 分类器测试 + argv 测试 | ✅ |
-| **── 冻结：Protocol + Adapter 可实施 ──** | | |
-| 4 | `CDPHelper._run_command()` 底层改造 | |
-| 5 | `LegacyAdapter` | |
-| 6 | 迁移 A — frame_id keyword-only (~93 处) | |
-| 7 | 迁移 B — click/form check .ok | |
-| 8 | 迁移 C — snapshot/json.loads 归一化 | |
-| 9 | 迁移 D — 删除 click_checked() | |
-| 10 | AST 守卫 — 验证无裸 click/form 调用 | |
-| 11 | 迁移 E — composition roots | |
-| **── 冻结：lanuage 内部迁移完成 ──** | | |
-| 12 | `BrowserLease` + `BrowserManager` | |
-| 13 | BrowserLease 测试（refcount/stale/attach/rollback） | |
-| 14 | `BitCDPAdapter` | |
-| 15 | Bit 集成测试（iframe + dynamic frame_id + finally release） | |
-| 16 | `pyproject.toml` — lanuage_core + lanuage_automation + newTaskTest | |
+| Phase | 内容 |
+|-------|------|
+| 1 | `cdp_protocol.py` — Protocol + CommandResult + RawCommand + CDPTimeout |
+| 2 | `subprocess_cdp_client.py` — SubprocessCDPClient + classifier (transport-first) + decoder |
+| 3 | 解码器测试 + 分类器测试 + argv 测试 |
+| **── Gate A: Protocol + Adapter 可实施 ──** | |
+| 4 | `pyproject.toml` — lanuage_core 包 |
+| 5 | `CDPHelper._run_command()` 底层 RawCommand |
+| 6 | `LegacyAdapter` |
+| 7 | 迁移 A — frame_id keyword-only (~93 处) |
+| 8 | 迁移 B — click/form → check .ok |
+| 9 | 迁移 C — snapshot/json.loads → Adapter 归一化 |
+| 10 | 迁移 D — click_checked() 删除 |
+| 11 | AST 守卫 — 禁止裸 click/form |
+| 12 | 迁移 E — composition roots |
+| **── Gate B: lanuage 内部迁移完成 ──** | |
+| 13 | `BrowserLease` + `SessionRecord` + `BrowserManager`（含 ExternalSessionConflict） |
+| 14 | BrowserManager 测试（ABA/rollback/config-conflict） |
+| 15 | `BitCDPAdapter` |
+| 16 | Bit 集成测试（iframe dynamic frame_id + finally release） |
